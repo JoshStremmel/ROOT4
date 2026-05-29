@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE / editor settings
+.vscode/
+.idea/
+.claude/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# NOTE: .cache/espn/ is intentionally tracked — the web app reads
+# scoreboard JSON from GitHub raw URLs at runtime.
