@@ -298,8 +298,9 @@ export function computeTiebreakerReasons(rawTeams) {
 
   const result = {};
   const addResult = (winner, loser, reason) => {
-    if (!result[winner.abbr]) result[winner.abbr] = { over: [], reason };
+    if (!result[winner.abbr]) result[winner.abbr] = { over: [], reasons: {}, reason };
     if (!result[winner.abbr].over.includes(loser.abbr)) result[winner.abbr].over.push(loser.abbr);
+    result[winner.abbr].reasons[loser.abbr] = reason;
   };
 
   const allPool = Object.values(rawTeams);

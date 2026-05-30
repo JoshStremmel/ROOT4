@@ -82,6 +82,9 @@ export interface StandingsResult {
 
 export interface TiebreakerEntry {
   over: string[];
+  /** Per-opponent reason: losers[abbr] → the step that resolved that specific matchup. */
+  reasons: Record<string, string>;
+  /** Reason for the first recorded win (kept for backward compatibility). */
   reason: string;
 }
 
