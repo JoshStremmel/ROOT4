@@ -207,7 +207,7 @@ export function computeTiebreakerReasons(rawTeams) {
     const bDR = (b.results || []).filter(r => { const o = rawTeams[r.oppAbbr]; return o && o.conf === b.conf && o.div === b.div; });
     const aDp = pctOf(aDR), bDp = pctOf(bDR);
     if (aDp !== null && bDp !== null && Math.abs(aDp - bDp) > 1e-6) {
-      if (aDp > bDp) { const w = aDR.filter(r => r.win).length, l = aDR.filter(r => !r.win && !r.tie).length; return `Division record (${w}-${l})`; }
+      if (aDp > bDp) { const w = aDR.filter(r => r.win).length, l = aDR.filter(r => !r.win && !r.tie).length; const bw = bDR.filter(r => r.win).length, bl = bDR.filter(r => !r.win && !r.tie).length; return `Division record (${w}-${l} vs ${bw}-${bl})`; }
       return null;
     }
 
@@ -216,7 +216,7 @@ export function computeTiebreakerReasons(rawTeams) {
       const [aCG, bCG] = cg;
       const acp = pctOf(aCG), bcp = pctOf(bCG);
       if (acp !== null && bcp !== null && Math.abs(acp - bcp) > 1e-6) {
-        if (acp > bcp) { const w = aCG.filter(r => r.win).length, l = aCG.filter(r => !r.win && !r.tie).length; return `Common games (${w}-${l})`; }
+        if (acp > bcp) { const w = aCG.filter(r => r.win).length, l = aCG.filter(r => !r.win && !r.tie).length; const bw = bCG.filter(r => r.win).length, bl = bCG.filter(r => !r.win && !r.tie).length; return `Common games (${w}-${l} vs ${bw}-${bl})`; }
         return null;
       }
     }
@@ -270,7 +270,7 @@ export function computeTiebreakerReasons(rawTeams) {
       const [aCG, bCG] = cg;
       const acp = pctOf(aCG), bcp = pctOf(bCG);
       if (acp !== null && bcp !== null && Math.abs(acp - bcp) > 1e-6) {
-        if (acp > bcp) { const w = aCG.filter(r => r.win).length, l = aCG.filter(r => !r.win && !r.tie).length; return `Common games (${w}-${l})`; }
+        if (acp > bcp) { const w = aCG.filter(r => r.win).length, l = aCG.filter(r => !r.win && !r.tie).length; const bw = bCG.filter(r => r.win).length, bl = bCG.filter(r => !r.win && !r.tie).length; return `Common games (${w}-${l} vs ${bw}-${bl})`; }
         return null;
       }
     }
@@ -862,7 +862,7 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
     for (const team of [home, away]) {
       const t = teams[team];
       if (team === fav.abbr || t.conf !== fav.conf) continue;
-      if (t.record[0] > t.record[1] && !_elimFromPlayoffs(t, teams)) {
+      if (t.record[0] > t.record[1] && !_elimFromPlayoffs(t, teams) && !_elimFromPlayoffs(fav, teams)) {
         const opp = team === home ? away : home;
         out.push({ root_for: opp, against: team, category: "PlayoffSoftening", strength: "high", strength_weight: STRENGTH_WEIGHT.high, why: `${team} (${t.record[0]}-${t.record[1]}) is a ${fav.conf} playoff contender — a loss directly tightens the race` });
       }
@@ -1012,9 +1012,12 @@ export function computeRecommendations(favAbbr, dislikes, mode = "overall", team
       rootAbbr = playoffRoot; againstAbbr = playoffAgainst;
       score = playoffScore;
       strengthWeight = 0;
-      if (score > 0) { category = "direct_playoff_impact"; strength = "low"; }
-      else            { category = "no_impact"; strength = ""; }
+      // Call buildReasoning first — if it can't produce a meaningful reason
+      // (eliminated teams, out-of-conference games) the score should be 0.
       reasonsAll = buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, weekMeta);
+      const hasReason = !(reasonsAll.length === 1 && reasonsAll[0] === 'no direct playoff impact');
+      if (score > 0 && hasReason) { category = "direct_playoff_impact"; strength = "low"; }
+      else { score = 0; category = "no_impact"; strength = ""; }
     }
 
     if (score > 0) {
