@@ -330,6 +330,300 @@ export function computeTiebreakerReasons(rawTeams) {
   return result;
 }
 
+/* ─── Multi-team tiebreakers ─────────────────────────────────────────────── */
+
+function _pct(results) {
+  if (!results || !results.length) return null;
+  const w = results.filter(r => r.win).length, t = results.filter(r => r.tie).length;
+  return (w + 0.5 * t) / results.length;
+}
+
+function _sov(abbr, teams) {
+  const wins = (teams[abbr].results || []).filter(r => r.win);
+  if (!wins.length) return null;
+  let w = 0, l = 0, t = 0;
+  for (const r of wins) { const o = teams[r.oppAbbr]; if (!o) continue; w += o.record[0]; l += o.record[1]; t += o.record[2] || 0; }
+  const g = w + l + t;
+  return g ? (w + 0.5 * t) / g : null;
+}
+
+function _sos(abbr, teams) {
+  const games = teams[abbr].results || [];
+  if (!games.length) return null;
+  let w = 0, l = 0, t = 0;
+  for (const r of games) { const o = teams[r.oppAbbr]; if (!o) continue; w += o.record[0]; l += o.record[1]; t += o.record[2] || 0; }
+  const g = w + l + t;
+  return g ? (w + 0.5 * t) / g : null;
+}
+
+// Standard competition (1224) ranking: ties share a rank, the next rank skips.
+// ascending=true → smallest value earns rank 1.
+function _stdRank(abbr, pool, getter, ascending) {
+  const sorted = [...pool].sort((a, b) => ascending ? getter(a) - getter(b) : getter(b) - getter(a));
+  let rank = 1;
+  for (let i = 0; i < sorted.length; i++) {
+    if (i > 0 && Math.abs(getter(sorted[i]) - getter(sorted[i - 1])) > 1e-9) rank = i + 1;
+    if (sorted[i].abbr === abbr) return rank;
+  }
+  return pool.length;
+}
+
+// Combined PF+PA rank within pool (lower = better).
+function _combinedRank(abbr, pool) {
+  return _stdRank(abbr, pool, t => t.pf || 0, false) +
+         _stdRank(abbr, pool, t => t.pa || 0, true);
+}
+
+// Find the single leader in group by metricFn.
+// Returns { winner: abbr | null, detail: string }.
+// winner is null when no clear leader or no data.
+function _leader(group, metricFn, higherIsBetter, label) {
+  const vals = {};
+  for (const a of group) vals[a] = metricFn(a);
+  const valid = group.filter(a => vals[a] !== null && vals[a] !== undefined);
+  if (!valid.length) return { winner: null, detail: `${label}: no data` };
+  valid.sort((a, b) => higherIsBetter ? vals[b] - vals[a] : vals[a] - vals[b]);
+  const best = vals[valid[0]];
+  const tied = valid.filter(a => Math.abs(vals[a] - best) < 1e-9);
+  if (tied.length === 1)
+    return { winner: valid[0], detail: `${label}: ${valid[0]} (${typeof best === 'number' ? best.toFixed(3) : best})` };
+  return { winner: null, detail: `${label}: still tied (${tied.join(', ')})` };
+}
+
+// Intersection of opponents ALL group members have faced, excluding group members.
+function _commonOpps(group, teams) {
+  const gs = new Set(group);
+  let common = null;
+  for (const a of group) {
+    const opps = new Set((teams[a].results || []).map(r => r.oppAbbr).filter(o => !gs.has(o)));
+    common = common === null ? opps : new Set([...common].filter(o => opps.has(o)));
+  }
+  return common || new Set();
+}
+
+// ─── Step functions ────────────────────────────────────────────────────────
+
+function _s_divH2H(group, teams) {
+  const gs = new Set(group);
+  let total = 0;
+  const pcts = {};
+  for (const a of group) {
+    const h = (teams[a].results || []).filter(r => gs.has(r.oppAbbr));
+    total += h.length;
+    pcts[a] = _pct(h);
+  }
+  if (!total) return { winner: null, detail: 'Head-to-head: no games played between the tied teams' };
+  return _leader(group, a => pcts[a], true, 'Head-to-head');
+}
+
+// WC H2H: one team must have beaten ALL others (or two-team equivalent).
+function _s_wcH2HSweep(group, teams) {
+  const gs = new Set(group);
+  for (const a of group) {
+    const beaten = new Set((teams[a].results || []).filter(r => r.win && gs.has(r.oppAbbr)).map(r => r.oppAbbr));
+    if (group.filter(o => o !== a).every(o => beaten.has(o)))
+      return { winner: a, detail: `Head-to-head sweep: ${a} beat ${group.filter(o => o !== a).join(', ')}` };
+  }
+  return { winner: null, detail: 'Head-to-head: no team swept all others' };
+}
+
+function _s_divRecord(group, teams) {
+  const pcts = {};
+  for (const a of group) {
+    const t = teams[a];
+    pcts[a] = _pct((t.results || []).filter(r => { const o = teams[r.oppAbbr]; return o && o.conf === t.conf && o.div === t.div; }));
+  }
+  return _leader(group, a => pcts[a], true, 'Division record');
+}
+
+function _s_confRecord(group, teams) {
+  const pcts = {};
+  for (const a of group) {
+    const t = teams[a];
+    pcts[a] = _pct((t.results || []).filter(r => teams[r.oppAbbr]?.conf === t.conf));
+  }
+  return _leader(group, a => pcts[a], true, 'Conference record');
+}
+
+// minGames: minimum common games each team must have (0 = no minimum).
+function _s_commonOpps(group, teams, minGames) {
+  const cs = _commonOpps(group, teams);
+  if (!cs.size) return { winner: null, detail: 'Common opponents: no opponents in common' };
+  const pcts = {};
+  for (const a of group) {
+    const cg = (teams[a].results || []).filter(r => cs.has(r.oppAbbr));
+    if (minGames > 0 && cg.length < minGames)
+      return { winner: null, detail: `Common opponents: fewer than ${minGames} common games` };
+    pcts[a] = _pct(cg);
+  }
+  return _leader(group, a => pcts[a], true, 'Common opponents');
+}
+
+function _s_confRank(group, teams) {
+  const conf = teams[group[0]]?.conf;
+  const pool = Object.values(teams).filter(t => t.conf === conf);
+  return _leader(group, a => _combinedRank(a, pool), false, 'Conference points rank');
+}
+
+function _s_allRank(group, teams) {
+  return _leader(group, a => _combinedRank(a, Object.values(teams)), false, 'All-team points rank');
+}
+
+function _s_netCommon(group, teams) {
+  const cs = _commonOpps(group, teams);
+  if (!cs.size) return { winner: null, detail: 'Net points (common games): no common opponents' };
+  const net = {};
+  for (const a of group)
+    net[a] = (teams[a].results || []).filter(r => cs.has(r.oppAbbr)).reduce((s, r) => s + (r.pf || 0) - (r.pa || 0), 0);
+  return _leader(group, a => net[a], true, 'Net points, common games');
+}
+
+function _s_netConf(group, teams) {
+  const net = {};
+  for (const a of group) {
+    const t = teams[a];
+    net[a] = (t.results || []).filter(r => teams[r.oppAbbr]?.conf === t.conf).reduce((s, r) => s + (r.pf || 0) - (r.pa || 0), 0);
+  }
+  return _leader(group, a => net[a], true, 'Net points, conference games');
+}
+
+function _s_netAll(group, teams) {
+  const net = {};
+  for (const a of group) { const t = teams[a]; net[a] = (t.pf || 0) - (t.pa || 0); }
+  return _leader(group, a => net[a], true, 'Net points, all games');
+}
+
+function _s_netTDs(group, teams) {
+  const hasTDs = group.some(a => (teams[a].results || []).some(r => r.tdsFor !== undefined));
+  if (!hasTDs) return { winner: null, detail: 'Net touchdowns: data not available' };
+  const net = {};
+  for (const a of group)
+    net[a] = (teams[a].results || []).reduce((s, r) => s + (r.tdsFor || 0) - (r.tdsAgainst || 0), 0);
+  return _leader(group, a => net[a], true, 'Net touchdowns, all games');
+}
+
+// ─── Step lists ────────────────────────────────────────────────────────────
+
+function _divSteps(group, teams) {
+  return [
+    { num: 1,  label: 'Head-to-head',               run: () => _s_divH2H(group, teams) },
+    { num: 2,  label: 'Division record',             run: () => _s_divRecord(group, teams) },
+    { num: 3,  label: 'Common opponents',            run: () => _s_commonOpps(group, teams, 0) },
+    { num: 4,  label: 'Conference record',           run: () => _s_confRecord(group, teams) },
+    { num: 5,  label: 'Strength of victory',         run: () => _leader(group, a => _sov(a, teams), true, 'Strength of victory') },
+    { num: 6,  label: 'Strength of schedule',        run: () => _leader(group, a => _sos(a, teams), true, 'Strength of schedule') },
+    { num: 7,  label: 'Conference points rank',      run: () => _s_confRank(group, teams) },
+    { num: 8,  label: 'All-team points rank',        run: () => _s_allRank(group, teams) },
+    { num: 9,  label: 'Net points, common games',    run: () => _s_netCommon(group, teams) },
+    { num: 10, label: 'Net points, all games',       run: () => _s_netAll(group, teams) },
+    { num: 11, label: 'Net touchdowns',              run: () => _s_netTDs(group, teams) },
+  ];
+}
+
+function _wcSteps(group, teams) {
+  return [
+    { num: 2,  label: 'Head-to-head sweep',          run: () => _s_wcH2HSweep(group, teams) },
+    { num: 3,  label: 'Conference record',           run: () => _s_confRecord(group, teams) },
+    { num: 4,  label: 'Common opponents (4+ games)', run: () => _s_commonOpps(group, teams, 4) },
+    { num: 5,  label: 'Strength of victory',         run: () => _leader(group, a => _sov(a, teams), true, 'Strength of victory') },
+    { num: 6,  label: 'Strength of schedule',        run: () => _leader(group, a => _sos(a, teams), true, 'Strength of schedule') },
+    { num: 7,  label: 'Conference points rank',      run: () => _s_confRank(group, teams) },
+    { num: 8,  label: 'All-team points rank',        run: () => _s_allRank(group, teams) },
+    { num: 9,  label: 'Net points, conference games', run: () => _s_netConf(group, teams) },
+    { num: 10, label: 'Net points, all games',       run: () => _s_netAll(group, teams) },
+    { num: 11, label: 'Net touchdowns',              run: () => _s_netTDs(group, teams) },
+  ];
+}
+
+// ─── Division reduction (WC Step 1) ────────────────────────────────────────
+// Returns one representative per division. Calls _rankGroup with 'division'
+// for any division that has multiple entries — no infinite recursion because
+// _rankGroup never calls _divReduce when forcedType === 'division'.
+
+function _divReduce(group, teams) {
+  const byDiv = {};
+  for (const a of group) {
+    const key = `${teams[a].conf}:${teams[a].div}`;
+    (byDiv[key] = byDiv[key] || []).push(a);
+  }
+  return Object.values(byDiv).map(members =>
+    members.length === 1 ? members[0] : _rankGroup(members, teams, 'division').ranked[0].abbr
+  );
+}
+
+// ─── Core ranking engine ────────────────────────────────────────────────────
+
+function _rankGroup(group, teams, forcedType) {
+  const ranked = [];
+  let remaining = [...group];
+  let rank = 1;
+
+  while (remaining.length > 1) {
+    const tieType = forcedType ||
+      (new Set(remaining.map(a => `${teams[a]?.conf}:${teams[a]?.div}`)).size === 1 ? 'division' : 'wildcard');
+
+    // For wild card ties, reduce each division to one representative first.
+    let active = remaining;
+    if (tieType === 'wildcard') {
+      const reps = _divReduce(remaining, teams);
+      if (reps.length < remaining.length) active = reps;
+    }
+
+    const steps = tieType === 'division' ? _divSteps(active, teams) : _wcSteps(active, teams);
+    let winner = null, resolvedStep = null;
+    for (const s of steps) {
+      const res = s.run();
+      if (res.winner) { winner = res.winner; resolvedStep = { step: s.num, stepLabel: s.label, detail: res.detail }; break; }
+    }
+
+    if (!winner) {
+      for (const a of remaining)
+        ranked.push({ abbr: a, rank, step: 12, stepLabel: 'Coin toss', detail: 'Cannot be determined — coin toss required' });
+      return { ranked, coinTossRequired: true };
+    }
+
+    ranked.push({ abbr: winner, rank, ...resolvedStep });
+    remaining = remaining.filter(a => a !== winner);
+    rank++;
+    // Remaining teams restart at Step 1 on the next iteration (reset rule).
+    // If 3+ → 2, the same step functions handle the two-team case naturally:
+    // the WC "sweep" requirement reduces to a plain head-to-head win.
+  }
+
+  if (remaining.length === 1)
+    ranked.push({ abbr: remaining[0], rank, step: 0, stepLabel: 'Last remaining', detail: 'All other tied teams ranked above' });
+
+  return { ranked, coinTossRequired: false };
+}
+
+/**
+ * Rank 3 or more teams with the same win percentage using NFL multi-team
+ * tiebreaker rules.
+ *
+ * Uses division tiebreaker steps when all teams share a division; wild-card
+ * steps (with per-division reduction as Step 1) otherwise.
+ *
+ * Reset rule: after one team separates, the remaining teams restart at Step 1.
+ * When the group falls to two teams, the same step functions handle the
+ * two-team format — the wild-card "sweep" requirement equals a plain head-to-
+ * head win for two teams, so no special casing is needed.
+ *
+ * Step 11 (net touchdowns) is silently skipped when GameResult objects do not
+ * carry tdsFor/tdsAgainst fields.
+ *
+ * @param {string[]} tiedAbbrs  abbreviations of the tied teams (≥ 2)
+ * @param {Record<string, TeamData>} teams  all teams in the league
+ * @returns {{ ranked: MultiTieEntry[], coinTossRequired: boolean }}
+ */
+export function resolveMultiTie(tiedAbbrs, teams) {
+  if (!tiedAbbrs || tiedAbbrs.length < 2)
+    return {
+      ranked: (tiedAbbrs || []).map(a => ({ abbr: a, rank: 1, step: 0, stepLabel: 'Only team', detail: '' })),
+      coinTossRequired: false,
+    };
+  return _rankGroup([...tiedAbbrs], teams, null);
+}
+
 /* ─── Standings ──────────────────────────────────────────────────────────── */
 
 export function computeStandings(teams, tiebreakerReasons) {

@@ -121,6 +121,32 @@ export declare function resolveUnderdog(g: ScheduleGame): string | null;
 
 export declare function buildTeamStrengths(teams: Record<string, TeamData>): Record<string, TeamStrength>;
 export declare function computeTiebreakerReasons(rawTeams: Record<string, TeamData>): Record<string, TiebreakerEntry>;
+
+export interface MultiTieEntry {
+  abbr: string;
+  /** 1-based position. Tied teams share a rank when a coin toss is reached. */
+  rank: number;
+  /** Step number that separated this team (0 = last survivor, 12 = coin toss). */
+  step: number;
+  stepLabel: string;
+  /** Human-readable explanation for the UI. */
+  detail: string;
+}
+
+export interface MultiTieResult {
+  ranked: MultiTieEntry[];
+  /** True when at least one position could not be resolved and requires a coin toss. */
+  coinTossRequired: boolean;
+}
+
+/**
+ * Rank 3 or more teams with the same win percentage using NFL multi-team
+ * tiebreaker rules with the reset rule.
+ *
+ * Automatically applies division tiebreaker steps when all teams share a
+ * division, or wild-card steps (with per-division reduction) otherwise.
+ */
+export declare function resolveMultiTie(tiedAbbrs: string[], teams: Record<string, TeamData>): MultiTieResult;
 export declare function computeStandings(teams: Record<string, TeamData>, tiebreakerReasons: Record<string, TiebreakerEntry>): StandingsResult;
 export declare function availableModes(favAbbr: string, teams: Record<string, TeamData>, weekMeta: WeekMeta): string[];
 export declare function favTeamGame(favAbbr: string, mode: string, teams: Record<string, TeamData>, schedule: ScheduleGame[], weekMeta: WeekMeta): object | null;
