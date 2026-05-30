@@ -201,7 +201,7 @@ export function computeTiebreakerReasons(rawTeams) {
   const divBreak = (a, b, confPool, allPool) => {
     const h2h = (a.results || []).filter(r => r.oppAbbr === b.abbr);
     const hW = h2h.filter(r => r.win).length, hL = h2h.filter(r => !r.win && !r.tie).length;
-    if (h2h.length && hW !== hL) return hW > hL ? `Head-to-head (${hW}-${hL})` : null;
+    if (h2h.length && hW !== hL) return hW > hL ? `Head-to-head` : null;
 
     const aDR = (a.results || []).filter(r => { const o = rawTeams[r.oppAbbr]; return o && o.conf === a.conf && o.div === a.div; });
     const bDR = (b.results || []).filter(r => { const o = rawTeams[r.oppAbbr]; return o && o.conf === b.conf && o.div === b.div; });
@@ -225,7 +225,7 @@ export function computeTiebreakerReasons(rawTeams) {
     const bCR = (b.results || []).filter(r => rawTeams[r.oppAbbr]?.conf === b.conf);
     const aCp = pctOf(aCR), bCp = pctOf(bCR);
     if (aCp !== null && bCp !== null && Math.abs(aCp - bCp) > 1e-6) {
-      if (aCp > bCp) { const w = aCR.filter(r => r.win).length, l = aCR.filter(r => !r.win && !r.tie).length; return `Conference record (${w}-${l})`; }
+      if (aCp > bCp) { const w = aCR.filter(r => r.win).length, l = aCR.filter(r => !r.win && !r.tie).length; const bw = bCR.filter(r => r.win).length, bl = bCR.filter(r => !r.win && !r.tie).length; return `Conference record (${w}-${l} vs ${bw}-${bl})`; }
       return null;
     }
 
@@ -255,13 +255,13 @@ export function computeTiebreakerReasons(rawTeams) {
   const wcBreak = (a, b, confPool, allPool) => {
     const h2h = (a.results || []).filter(r => r.oppAbbr === b.abbr);
     const hW = h2h.filter(r => r.win).length, hL = h2h.filter(r => !r.win && !r.tie).length;
-    if (h2h.length && hW !== hL) return hW > hL ? `Head-to-head (${hW}-${hL})` : null;
+    if (h2h.length && hW !== hL) return hW > hL ? `Head-to-head` : null;
 
     const aCR = (a.results || []).filter(r => rawTeams[r.oppAbbr]?.conf === a.conf);
     const bCR = (b.results || []).filter(r => rawTeams[r.oppAbbr]?.conf === b.conf);
     const aCp = pctOf(aCR), bCp = pctOf(bCR);
     if (aCp !== null && bCp !== null && Math.abs(aCp - bCp) > 1e-6) {
-      if (aCp > bCp) { const w = aCR.filter(r => r.win).length, l = aCR.filter(r => !r.win && !r.tie).length; return `Conference record (${w}-${l})`; }
+      if (aCp > bCp) { const w = aCR.filter(r => r.win).length, l = aCR.filter(r => !r.win && !r.tie).length; const bw = bCR.filter(r => r.win).length, bl = bCR.filter(r => !r.win && !r.tie).length; return `Conference record (${w}-${l} vs ${bw}-${bl})`; }
       return null;
     }
 
@@ -788,6 +788,15 @@ export function ownGameImpact(favAbbr, mode, teams, weekMeta) {
 
 /* ─── Recommendation internals ───────────────────────────────────────────── */
 
+// True when a team is mathematically eliminated from all playoff contention:
+// 7+ conference teams already have more wins than this team can possibly reach.
+function _elimFromPlayoffs(team, teams) {
+  const played = team.record[0] + team.record[1] + (team.record[2] || 0);
+  const maxWins = team.record[0] + Math.max(0, 17 - played);
+  const confPeers = Object.values(teams).filter(t => t.conf === team.conf && t.abbr !== team.abbr);
+  return confPeers.filter(t => t.record[0] > maxWins).length >= 7;
+}
+
 export function modeScore(candidate, opponent, fav, mode, dislikes, teams, weekMeta) {
   const o = teams[opponent];
   if (!o) return 0;
@@ -805,15 +814,15 @@ export function modeScore(candidate, opponent, fav, mode, dislikes, teams, weekM
       } else score += 0.25;
     }
   } else if (mode === "wildcard") {
-    if (isSameConf) score += 0.20;
+    if (isSameConf && !_elimFromPlayoffs(o, teams)) score += 0.20;
   } else if (mode === "conf_one_seed") {
-    if (isSameConf) score += 0.20 + 0.10 * Math.min(o.record[0] / 17, 1);
+    if (isSameConf && !_elimFromPlayoffs(o, teams)) score += 0.20 + 0.10 * Math.min(o.record[0] / 17, 1);
   } else {
     if (isSameDiv && inDivisionContention(fav, teams, weekMeta) && inDivisionContention(o, teams, weekMeta)) {
       const urgency = Math.max(0, 1 - favGB / Math.max(wr, 1));
       score += 0.20 + 0.20 * urgency;
     } else if (isSameDiv) score += 0.20;
-    else if (isSameConf) score += 0.20;
+    else if (isSameConf && !_elimFromPlayoffs(o, teams)) score += 0.20;
   }
   if (dislikes.includes(opponent)) score += 0.15;
   const favPct = winPct(fav), oppPct = winPct(o);
@@ -853,7 +862,7 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
     for (const team of [home, away]) {
       const t = teams[team];
       if (team === fav.abbr || t.conf !== fav.conf) continue;
-      if (t.record[0] > t.record[1]) {
+      if (t.record[0] > t.record[1] && !_elimFromPlayoffs(t, teams)) {
         const opp = team === home ? away : home;
         out.push({ root_for: opp, against: team, category: "PlayoffSoftening", strength: "high", strength_weight: STRENGTH_WEIGHT.high, why: `${team} (${t.record[0]}-${t.record[1]}) is a ${fav.conf} playoff contender — a loss directly tightens the race` });
       }
@@ -930,9 +939,11 @@ export function buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, w
       parts.push(`${againstAbbr} is a division rival — their loss improves ${target}`);
     }
   } else if (opp.conf === fav.conf) {
+    const oppElim = _elimFromPlayoffs(opp, teams);
+    const favElim = _elimFromPlayoffs(fav, teams);
     if (mode === "conf_one_seed") {
-      parts.push(`${againstAbbr} (${opp.record[0]}W) is a ${fav.conf} rival — their loss improves ${target}`);
-    } else {
+      if (!oppElim) parts.push(`${againstAbbr} (${opp.record[0]}W) is a ${fav.conf} rival — their loss improves ${target}`);
+    } else if (!oppElim && !favElim) {
       parts.push(`${againstAbbr} is a conference competitor — their loss improves ${target}`);
     }
   }
