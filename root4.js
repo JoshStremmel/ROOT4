@@ -738,7 +738,7 @@ export function favTeamGame(favAbbr, mode = "overall", teams, schedule, weekMeta
 
   let blurb = "";
   if (mode === "tank") {
-    blurb = `TANK mode: root for ${oppAbbr} (${opp.record[0]}W) to WIN — a ${favAbbr} loss improves your draft slot.`;
+    blurb = `TANK mode: root for ${oppAbbr} (${opp.record[0]}-${opp.record[1]}) to WIN — a ${favAbbr} loss improves your draft slot.`;
   } else if (mode === "division" || inDivisionContention(fav, teams, weekMeta)) {
     if (fGB === 0) {
       // Check if a win would clinch the division outright
@@ -864,10 +864,11 @@ export function modeScore(candidate, opponent, fav, mode, dislikes, teams, weekM
       score += 0.20;
     }
   }
-  // Seeding fallback: same-conf games always carry some seeding relevance
-  // even when neither team is in the direct wild card or division race.
-  // Give a small score so these games aren't invisible on the schedule.
-  if (score < 0.06 && isSameConf && !_elimFromPlayoffs(fav, teams) && !_elimFromPlayoffs(o, teams)) {
+  // Seeding fallback: when a conf team has clinched their division they're
+  // definitely in the playoffs and their result still affects seed position.
+  // Only applies to clinched teams — eliminated-but-not-clinched teams have
+  // no playoff relevance and should score 0.
+  if (score < 0.06 && isSameConf && !_elimFromPlayoffs(fav, teams) && _clinched(o, teams)) {
     score = 0.06;
   }
   if (dislikes.includes(opponent)) score += 0.15;
@@ -892,20 +893,35 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
       : `${(-gb).toFixed(1)} GB ahead of you in the ${fav.div}`;
   };
   if (homeIsDivRival && awayIsDivRival) {
-    const biggerThreat = winPct(homeT) >= winPct(awayT) ? home : away;
+    // Prefer the rival that's still alive in the division race as the "bigger threat".
+    // If both or neither are alive, fall back to win pct.
+    const homeAlive = !_elimFromDivision(homeT, teams);
+    const awayAlive = !_elimFromDivision(awayT, teams);
+    const biggerThreat = homeAlive && !awayAlive ? home
+                       : awayAlive && !homeAlive ? away
+                       : winPct(homeT) >= winPct(awayT) ? home : away;
     const rootSide = biggerThreat === home ? away : home;
     const bt = teams[biggerThreat];
+    const btAlive = !_elimFromDivision(bt, teams);
     out.push({
       root_for: rootSide, against: biggerThreat,
       category: "DivisionRivalTank", strength: "high", strength_weight: 0.50,
-      why: `${biggerThreat} (${bt.record[0]}-${bt.record[1]}, ${_divGB(bt)}) is the bigger division threat`,
+      why: btAlive
+        ? `${biggerThreat} (${bt.record[0]}-${bt.record[1]}, ${_divGB(bt)}) is the bigger division threat`
+        : `${biggerThreat} (${bt.record[0]}-${bt.record[1]}) is a division rival`,
     });
   } else if (homeIsDivRival) {
+    const alive = !_elimFromDivision(homeT, teams);
     out.push({ root_for: away, against: home, category: "DivisionRivalTank", strength: "high", strength_weight: 0.50,
-      why: `${home} (${homeT.record[0]}-${homeT.record[1]}) is a division rival, ${_divGB(homeT)}` });
+      why: alive
+        ? `${home} (${homeT.record[0]}-${homeT.record[1]}) is a division rival, ${_divGB(homeT)}`
+        : `${home} (${homeT.record[0]}-${homeT.record[1]}) is a division rival` });
   } else if (awayIsDivRival) {
+    const alive = !_elimFromDivision(awayT, teams);
     out.push({ root_for: home, against: away, category: "DivisionRivalTank", strength: "high", strength_weight: 0.50,
-      why: `${away} (${awayT.record[0]}-${awayT.record[1]}) is a division rival, ${_divGB(awayT)}` });
+      why: alive
+        ? `${away} (${awayT.record[0]}-${awayT.record[1]}) is a division rival, ${_divGB(awayT)}`
+        : `${away} (${awayT.record[0]}-${awayT.record[1]}) is a division rival` });
   }
 
   for (const team of [home, away]) {
@@ -945,7 +961,7 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
     if (homeT.conf === fav.conf && home !== fav.abbr) {
       const gap = homeT.record[0] - awayT.record[0];
       if (gap >= 4) {
-        out.push({ root_for: away, against: home, category: "UpsetRooting", strength: "medium", strength_weight: STRENGTH_WEIGHT.medium, why: `${home} (${homeT.record[0]}W) is a heavy home favorite vs ${away} (${awayT.record[0]}W, ${gap}-win gap) — trap-game upset` });
+        out.push({ root_for: away, against: home, category: "UpsetRooting", strength: "medium", strength_weight: STRENGTH_WEIGHT.medium, why: `${home} (${homeT.record[0]}-${homeT.record[1]}) is a heavy home favorite vs ${away} (${awayT.record[0]}-${awayT.record[1]}, ${gap}-win gap) — trap-game upset` });
       }
     }
   }
@@ -963,7 +979,7 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
       if (w >= 6 && w <= 9) {
         const opp = team === home ? away : home;
         const label = isDivRival ? "division rival" : "conference threat";
-        out.push({ root_for: opp, against: team, category: "DraftPositioning", strength: "low", strength_weight: STRENGTH_WEIGHT.low, why: `${team} (${w}W) is a ${label} stuck in no man's land — keep them losing` });
+        out.push({ root_for: opp, against: team, category: "DraftPositioning", strength: "low", strength_weight: STRENGTH_WEIGHT.low, why: `${team} (${t.record[0]}-${t.record[1]}) is a ${label} stuck in no man's land — keep them losing` });
       }
     }
   }
@@ -1004,9 +1020,11 @@ export function scoreGameTank(home, away, fav, teams, weekMeta) {
   let base = minGap === 0 ? 0.5 : minGap === 1 ? 0.35 : minGap === 2 ? 0.20 : minGap === 3 ? 0.10 : 0.05;
   const isDivRival = teams[rootAbbr].div === fav.div && teams[rootAbbr].conf === fav.conf;
   if (isDivRival) base = Math.min(base + 0.15, 1.0);
+  const rootT = teams[rootAbbr];
+  const rootRec = `${rootT.record[0]}-${rootT.record[1]}`;
   let why;
-  if (rootWins < favWins) why = `${rootAbbr} (${rootWins}W) is below you — their win brings them up and protects your draft slot`;
-  else if (rootWins === favWins) why = `${rootAbbr} (${rootWins}W) is tied with you — their win separates them from your draft range`;
+  if (rootWins < favWins) why = `${rootAbbr} (${rootRec}) is below you — their win brings them up and protects your draft slot`;
+  else if (rootWins === favWins) why = `${rootAbbr} (${rootRec}) is tied with you — their win separates them from your draft range`;
   else why = `neither team threatens your draft slot; root for the worse-record team to clear the field`;
   const strength = base >= 0.35 ? "high" : (base >= 0.20 ? "medium" : "low");
   return { rootFor: rootAbbr, against: againstAbbr, score: base, strength, strength_weight: STRENGTH_WEIGHT[strength], category: "TankPositioning", reasonsAll: [why] };
@@ -1040,7 +1058,7 @@ export function buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, w
     if (mode === "conf_one_seed") {
       if (!oppElim) {
         const clinchNote = oppClinched ? `, clinched the ${opp.conf} ${opp.div},` : '';
-        parts.push(`${againstAbbr}${clinchNote} (${opp.record[0]}W) is a ${fav.conf} rival — their loss improves ${target}`);
+        parts.push(`${againstAbbr}${clinchNote} (${opp.record[0]}-${opp.record[1]}) is a ${fav.conf} rival — their loss improves ${target}`);
       }
     } else if (oppClinched) {
       // Issue 3: team has clinched their division — note it so the user knows the game
