@@ -834,6 +834,28 @@ function _clinched(team, teams) {
   });
 }
 
+// True when a non-division-leader team is eliminated from wild card contention:
+// 3+ other non-division-leader conference teams already have more wins than this team
+// can possibly reach. Division leaders compete for div seeds rather than WC spots, so
+// they're excluded from the blocker count.
+function _elimFromWildcard(team, teams) {
+  const played = team.record[0] + team.record[1] + (team.record[2] || 0);
+  const maxWins = team.record[0] + Math.max(0, 17 - played);
+  const conf = team.conf;
+  const divLeaderAbbrs = new Set();
+  const divs = [...new Set(Object.values(teams).filter(t => t.conf === conf).map(t => t.div))];
+  for (const div of divs) {
+    const divTeams = Object.values(teams).filter(t => t.conf === conf && t.div === div);
+    const leader = divTeams.reduce((best, t) => winPct(t) > winPct(best) ? t : best, divTeams[0]);
+    divLeaderAbbrs.add(leader.abbr);
+  }
+  if (divLeaderAbbrs.has(team.abbr)) return false;
+  const rivals = Object.values(teams).filter(
+    t => t.conf === conf && t.abbr !== team.abbr && !divLeaderAbbrs.has(t.abbr)
+  );
+  return rivals.filter(t => t.record[0] > maxWins).length >= 3;
+}
+
 export function modeScore(candidate, opponent, fav, mode, dislikes, teams, weekMeta) {
   const o = teams[opponent];
   if (!o) return 0;
@@ -940,16 +962,17 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
     for (const team of [home, away]) {
       const t = teams[team];
       if (team === fav.abbr || t.conf !== fav.conf) continue;
-      if (t.record[0] > t.record[1] && !_elimFromPlayoffs(t, teams) && !_elimFromPlayoffs(fav, teams) && !_clinched(t, teams)) {
+      if (t.record[0] > t.record[1] && !_elimFromWildcard(t, teams) && !_elimFromPlayoffs(fav, teams) && !_clinched(t, teams)) {
         const opp = team === home ? away : home;
         const favWP = winPct(fav), teamWP = winPct(t);
+        const posnTarget = { division: "division title odds", conf_one_seed: "#1 seed odds" }[mode] || "wild card odds";
         let posnStr;
         if (teamWP > favWP + 0.01) {
-          posnStr = `(${t.record[0]}-${t.record[1]}) is ahead of you in the ${fav.conf} — their loss narrows the gap`;
+          posnStr = `(${t.record[0]}-${t.record[1]}) holds a spot above you — their loss improves your ${posnTarget}`;
         } else if (teamWP >= favWP - 0.01) {
-          posnStr = `(${t.record[0]}-${t.record[1]}) is locked in with you for a ${fav.conf} playoff spot — their loss gives you the edge`;
+          posnStr = `(${t.record[0]}-${t.record[1]}) is level with you — their loss gives you the edge in ${posnTarget}`;
         } else {
-          posnStr = `(${t.record[0]}-${t.record[1]}) is chasing you for the final ${fav.conf} playoff spots`;
+          posnStr = `(${t.record[0]}-${t.record[1]}) is behind you — their loss strengthens your ${posnTarget}`;
         }
         out.push({ root_for: opp, against: team, category: "PlayoffSoftening", strength: "high", strength_weight: STRENGTH_WEIGHT.high,
           why: `${team} ${posnStr}` });
@@ -1047,12 +1070,13 @@ export function buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, w
       else if (fGB < oGB) gbStr = `${againstAbbr} is ${(oGB - fGB).toFixed(1)} GB behind you`;
       else if (oGB < fGB) gbStr = `you are ${(fGB - oGB).toFixed(1)} GB behind ${againstAbbr}`;
       else gbStr = "tied in the division";
-      parts.push(`${againstAbbr} is a division rival in a title race (${gbStr}, ${wr} week${wr !== 1 ? 's' : ''} left) — their loss directly helps`);
+      parts.push(`${againstAbbr} is a division rival in a title race (${gbStr}, ${wr} week${wr !== 1 ? 's' : ''} left) — their loss directly helps your ${target}`);
     } else {
       parts.push(`${againstAbbr} is a division rival — their loss improves ${target}`);
     }
   } else if (opp.conf === fav.conf) {
     const oppElim = _elimFromPlayoffs(opp, teams);
+    const oppWCElim = _elimFromWildcard(opp, teams);
     const favElim = _elimFromPlayoffs(fav, teams);
     const oppClinched = _clinched(opp, teams);
     if (mode === "conf_one_seed") {
@@ -1064,17 +1088,25 @@ export function buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, w
       // Issue 3: team has clinched their division — note it so the user knows the game
       // only affects seeding, not the wild card race
       parts.push(`${againstAbbr} has clinched the ${opp.conf} ${opp.div} — this game only affects conference seeding`);
-    } else if (!oppElim && !favElim) {
-      const favWP = winPct(fav), oppWP = winPct(opp);
-      let standingStr;
-      if (oppWP > favWP + 0.005) {
-        standingStr = `(${opp.record[0]}-${opp.record[1]}) is ahead of you — their loss narrows the gap`;
-      } else if (favWP > oppWP + 0.005) {
-        standingStr = `(${opp.record[0]}-${opp.record[1]}) is behind you — their loss extends your lead`;
-      } else {
-        standingStr = `(${opp.record[0]}-${opp.record[1]}) is tied with you — their loss gives you the edge`;
+    } else if (!oppWCElim && !favElim) {
+      // Verify fav can actually reach a wild card spot, not just "not technically eliminated"
+      const wr = weeksRemainingFrom(weekMeta);
+      const favMaxWins = fav.record[0] + wr;
+      const wcBlockers = Object.values(teams).filter(
+        t => t.conf === fav.conf && t.div !== fav.div && t.abbr !== fav.abbr && t.record[0] > favMaxWins
+      ).length;
+      if (wcBlockers < 3) {
+        const favWP = winPct(fav), oppWP = winPct(opp);
+        let standingStr;
+        if (oppWP > favWP + 0.005) {
+          standingStr = `(${opp.record[0]}-${opp.record[1]}) holds a spot above you — their loss helps your ${target}`;
+        } else if (favWP > oppWP + 0.005) {
+          standingStr = `(${opp.record[0]}-${opp.record[1]}) is behind you — their loss strengthens your ${target}`;
+        } else {
+          standingStr = `(${opp.record[0]}-${opp.record[1]}) is level with you — their loss helps your ${target}`;
+        }
+        parts.push(`${againstAbbr} ${standingStr}`);
       }
-      parts.push(`${againstAbbr} ${standingStr} in the ${fav.conf} wild card race`);
     }
   }
   return parts.length ? parts : ["no direct playoff impact"];
