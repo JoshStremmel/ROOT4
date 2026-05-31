@@ -53,6 +53,7 @@ export const CATEGORY_META = {
   TankPositioning:       { label: "Tank positioning",    tone: "fav",     help: "Protect your draft slot — bring teams below you up." },
   SOVRooting:            { label: "Strength of victory", tone: "muted",   help: "You beat this team — root for them to keep winning and make that win look better." },
   UnderdogPick:          { label: "Underdog pick",       tone: "muted",   help: "No direct playoff impact — rooting for the upset." },
+  PlayoffSeeding:        { label: "Playoff seeding",     tone: "neutral", help: "Both teams are in the playoffs; this game only affects seed position." },
   direct_playoff_impact: { label: "Playoff impact",      tone: "fav",     help: "Direct playoff math: their loss improves your odds." },
   no_impact:             { label: "No impact",           tone: "muted",   help: "Not in your conference; result doesn't move your odds." },
 };
@@ -863,6 +864,12 @@ export function modeScore(candidate, opponent, fav, mode, dislikes, teams, weekM
       score += 0.20;
     }
   }
+  // Seeding fallback: same-conf games always carry some seeding relevance
+  // even when neither team is in the direct wild card or division race.
+  // Give a small score so these games aren't invisible on the schedule.
+  if (score < 0.06 && isSameConf && !_elimFromPlayoffs(fav, teams) && !_elimFromPlayoffs(o, teams)) {
+    score = 0.06;
+  }
   if (dislikes.includes(opponent)) score += 0.15;
   const favPct = winPct(fav), oppPct = winPct(o);
   score += Math.max(0, 0.10 - Math.abs(favPct - oppPct) * 0.2);
@@ -873,22 +880,32 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
   const out = [];
   const homeT = teams[home], awayT = teams[away];
 
-  // Division rivals — always root against them (weight 0.50 beats every other category).
-  // When two rivals meet, root against the bigger threat (better win pct).
+  // Division rivals — root against them (weight 0.50 beats every other category).
+  // Include specific games-back context so the reasoning reflects the actual standing.
   const homeIsDivRival = homeT.div === fav.div && homeT.conf === fav.conf && home !== fav.abbr;
   const awayIsDivRival = awayT.div === fav.div && awayT.conf === fav.conf && away !== fav.abbr;
+  const _divGB = (rival) => {
+    const gb = ((fav.record[0] - rival.record[0]) + (rival.record[1] - fav.record[1])) / 2;
+    if (Math.abs(gb) < 0.1) return `tied with you in the ${fav.div}`;
+    return gb > 0
+      ? `${gb.toFixed(1)} GB behind you in the ${fav.div}`
+      : `${(-gb).toFixed(1)} GB ahead of you in the ${fav.div}`;
+  };
   if (homeIsDivRival && awayIsDivRival) {
     const biggerThreat = winPct(homeT) >= winPct(awayT) ? home : away;
     const rootSide = biggerThreat === home ? away : home;
+    const bt = teams[biggerThreat];
     out.push({
       root_for: rootSide, against: biggerThreat,
       category: "DivisionRivalTank", strength: "high", strength_weight: 0.50,
-      why: `${biggerThreat} (${teams[biggerThreat].record[0]}-${teams[biggerThreat].record[1]}) is the bigger division threat — root for whoever knocks them down`,
+      why: `${biggerThreat} (${bt.record[0]}-${bt.record[1]}, ${_divGB(bt)}) is the bigger division threat`,
     });
   } else if (homeIsDivRival) {
-    out.push({ root_for: away, against: home, category: "DivisionRivalTank", strength: "high", strength_weight: 0.50, why: `${home} is a division rival — always root against them` });
+    out.push({ root_for: away, against: home, category: "DivisionRivalTank", strength: "high", strength_weight: 0.50,
+      why: `${home} (${homeT.record[0]}-${homeT.record[1]}) is a division rival, ${_divGB(homeT)}` });
   } else if (awayIsDivRival) {
-    out.push({ root_for: home, against: away, category: "DivisionRivalTank", strength: "high", strength_weight: 0.50, why: `${away} is a division rival — always root against them` });
+    out.push({ root_for: home, against: away, category: "DivisionRivalTank", strength: "high", strength_weight: 0.50,
+      why: `${away} (${awayT.record[0]}-${awayT.record[1]}) is a division rival, ${_divGB(awayT)}` });
   }
 
   for (const team of [home, away]) {
@@ -909,7 +926,17 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
       if (team === fav.abbr || t.conf !== fav.conf) continue;
       if (t.record[0] > t.record[1] && !_elimFromPlayoffs(t, teams) && !_elimFromPlayoffs(fav, teams) && !_clinched(t, teams)) {
         const opp = team === home ? away : home;
-        out.push({ root_for: opp, against: team, category: "PlayoffSoftening", strength: "high", strength_weight: STRENGTH_WEIGHT.high, why: `${team} (${t.record[0]}-${t.record[1]}) is a ${fav.conf} playoff contender — a loss directly tightens the race` });
+        const favWP = winPct(fav), teamWP = winPct(t);
+        let posnStr;
+        if (teamWP > favWP + 0.01) {
+          posnStr = `(${t.record[0]}-${t.record[1]}) is ahead of you in the ${fav.conf} — their loss narrows the gap`;
+        } else if (teamWP >= favWP - 0.01) {
+          posnStr = `(${t.record[0]}-${t.record[1]}) is locked in with you for a ${fav.conf} playoff spot — their loss gives you the edge`;
+        } else {
+          posnStr = `(${t.record[0]}-${t.record[1]}) is chasing you for the final ${fav.conf} playoff spots`;
+        }
+        out.push({ root_for: opp, against: team, category: "PlayoffSoftening", strength: "high", strength_weight: STRENGTH_WEIGHT.high,
+          why: `${team} ${posnStr}` });
       }
     }
   }
@@ -1101,8 +1128,25 @@ export function computeRecommendations(favAbbr, dislikes, mode = "overall", team
       // (eliminated teams, out-of-conference games) the score should be 0.
       reasonsAll = buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, weekMeta);
       const hasReason = !(reasonsAll.length === 1 && reasonsAll[0] === 'no direct playoff impact');
-      if (score > 0 && hasReason) { category = "direct_playoff_impact"; strength = "low"; }
-      else { score = 0; category = "no_impact"; strength = ""; }
+      if (score > 0 && hasReason) {
+        // If the opponent has clinched their division the game is seeding-only, not WC
+        const oppTeam = teams[againstAbbr];
+        const isSeedingOnly = oppTeam && oppTeam.conf === fav.conf && _clinched(oppTeam, teams);
+        category = isSeedingOnly ? "PlayoffSeeding" : "direct_playoff_impact";
+        strength  = isSeedingOnly ? "medium"          : "low";
+      } else {
+        score = 0; category = "no_impact"; strength = "";
+      }
+    }
+
+    // DivisionRivalTank: downgrade strength when the score reflects seeding-only
+    // impact (or no impact at all). The label stays "Division rival" but drops
+    // from HIGH to LOW so the badge accurately signals the game's importance.
+    if (category === "DivisionRivalTank") {
+      if (score === 0 || score < 0.15) {
+        strength = "low";
+        strengthWeight = STRENGTH_WEIGHT.low;
+      }
     }
 
     if (score > 0) {
