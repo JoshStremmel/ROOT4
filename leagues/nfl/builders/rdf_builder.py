@@ -18,14 +18,14 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from rdflib import (
-    RDF, XSD, Dataset, Graph, Literal, Namespace, URIRef
+    RDF, XSD, Graph, Literal, Namespace, URIRef
 )
 from rdflib.namespace import OWL, RDFS
 
+from engine.graph_builder import HolonicDatasetBuilder
 from espn_fetcher import CONFERENCE_MAP, DIVISION_MAP, DIVISION_RIVALS
 
 logger = logging.getLogger(__name__)
@@ -77,9 +77,13 @@ def _week_graph_iri(season: int, week: int,
 
 # ── Core Builder ──────────────────────────────────────────────────────────────
 
-class NFLGraphBuilder:
+class NFLGraphBuilder(HolonicDatasetBuilder):
     """
     Builds a holonic RDF Dataset from parsed ESPN data.
+
+    Dataset/graph plumbing (ontology loading, serialization, interior-graph
+    caching) is inherited from engine.graph_builder.HolonicDatasetBuilder —
+    this class adds NFL's own namespaces and triple-writing methods.
 
     Usage
     -----
@@ -95,8 +99,11 @@ class NFLGraphBuilder:
     """
 
     def __init__(self) -> None:
-        self.dataset = Dataset()
-        self._bind_namespaces(self.dataset)
+        super().__init__(namespaces={
+            "nfl": NFL, "team": TEAM, "game": GAME, "outcome": OUTCOME,
+            "playoff": PLAYOFF, "impact": IMPACT, "rec": REC, "user": USER,
+            "graph": GRAPH,
+        })
 
         # Named graphs
         self._g_teams       = self.dataset.graph(GRAPH["teams"])
@@ -113,14 +120,6 @@ class NFLGraphBuilder:
         self._team_graph_cache:  dict[str, Graph]  = {}   # abbr → interior graph
 
     # ── Public API ────────────────────────────────────────────────────────────
-
-    def load_ontologies(self, ontology_dir: str | Path) -> None:
-        """Parse all .ttl files from the ontology directory into the default graph."""
-        path = Path(ontology_dir)
-        default_g = self.dataset.default_context
-        for ttl in sorted(path.glob("*.ttl")):
-            logger.info("Loading ontology: %s", ttl)
-            default_g.parse(str(ttl), format="turtle")
 
     def add_teams_from_scoreboard(self, parsed: dict[str, Any]) -> None:
         """
@@ -388,44 +387,10 @@ class NFLGraphBuilder:
 
         logger.info("Playoff spot assignments written")
 
-    def serialize(self, path: str | Path, fmt: str = "trig") -> None:
-        """Write the full dataset to disk."""
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.dataset.serialize(destination=str(path), format=fmt)
-        logger.info("Dataset serialised → %s", path)
-
-    def serialize_graph(self, graph_iri: str, path: str | Path,
-                        fmt: str = "turtle") -> None:
-        """Serialize a single named graph."""
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        g = self.dataset.graph(URIRef(graph_iri))
-        g.serialize(destination=str(path), format=fmt)
-        logger.info("Graph %s → %s", graph_iri, path)
-
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _bind_namespaces(self, g: Graph | Dataset) -> None:
-        g.bind("nfl",    NFL)
-        g.bind("team",   TEAM)
-        g.bind("game",   GAME)
-        g.bind("outcome", OUTCOME)
-        g.bind("playoff", PLAYOFF)
-        g.bind("impact",  IMPACT)
-        g.bind("rec",     REC)
-        g.bind("user",    USER)
-        g.bind("graph",   GRAPH)
-
     def _team_interior_graph(self, abbr: str) -> Graph:
-        cached = self._team_graph_cache.get(abbr)
-        if cached is not None:
-            return cached
-        iri = GRAPH[f"team:{abbr}"]
-        g = self.dataset.graph(iri)
-        self._bind_namespaces(g)
-        self._team_graph_cache[abbr] = g
-        return g
+        return self._cached_graph(self._team_graph_cache, GRAPH[f"team:{abbr}"])
 
     def _upsert_team(self, td: dict) -> None:
         abbr  = td["abbr"]

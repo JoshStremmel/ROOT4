@@ -33,7 +33,14 @@ import sys
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+# engine/ holds the league-agnostic plumbing (HTTP, RDF/graph, SPARQL, scoring).
+# NFL is the only league implemented so far. Adding another league means
+# creating leagues/<league>/{builders,ontology,queries,tests}/ alongside it —
+# see leagues/nfl/ for the reference layout.
+sys.path.insert(0, str(Path(__file__).parent))  # repo root, so `engine` resolves
+_LEAGUE_DIR = Path(__file__).parent / "leagues" / "nfl"
+sys.path.insert(0, str(_LEAGUE_DIR))
+sys.path.insert(0, str(_LEAGUE_DIR / "builders"))  # builders/*.py import each other by bare name
 
 from builders.rdf_builder import NFLGraphBuilder
 from builders.season_ingester import SeasonIngester

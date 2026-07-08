@@ -45,6 +45,7 @@ from espn_fetcher import (
     SEASON_TYPE_POSTSEASON,
     POSTSEASON_WEEKS,
     POSTSEASON_WEEKS_COUNT,
+    REGULAR_SEASON_WEEKS,
 )
 from rdf_builder import (
     NFL, GRAPH,
@@ -56,8 +57,7 @@ from rdf_builder import (
 
 logger = logging.getLogger(__name__)
 
-NFL_REGULAR_SEASON_WEEKS = 18
-DEFAULT_REQUEST_DELAY    = 1.2   # seconds between ESPN API calls
+DEFAULT_REQUEST_DELAY = 1.2   # seconds between ESPN API calls
 
 
 class SeasonIngester:
@@ -104,7 +104,7 @@ class SeasonIngester:
         through_week : last week to ingest. None = all 18 weeks.
         from_week    : first week to ingest (default 1).
         """
-        end_week = through_week or NFL_REGULAR_SEASON_WEEKS
+        end_week = through_week or REGULAR_SEASON_WEEKS
 
         logger.info(
             "Ingesting season %d weeks %d–%d …", self.season, from_week, end_week
