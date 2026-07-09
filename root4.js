@@ -1374,3 +1374,114 @@ export function computeScenarios(favAbbr, teams, schedule, weekMeta) {
 
   return scenarios;
 }
+
+// ── Best-games views (league-agnostic) ─────────────────────────────────────
+// Used when no favorite team is selected: surface the week's most watchable
+// games. Both are pure rankings over the shared schedule/strength shapes, so
+// they carry no rooting logic and work for any league.
+
+// Highest-quality upcoming games: reward two strong teams AND an even matchup.
+export function computeTopMatchups(schedule, strengths, limit = 6) {
+  return (schedule || [])
+    .filter(g => !g.completed)
+    .map(g => {
+      const hs = strengths?.[g.home]?.strengthScore ?? 0.5;
+      const as = strengths?.[g.away]?.strengthScore ?? 0.5;
+      const quality = (hs + as) / 2;          // both good = marquee
+      const balance = 1 - Math.abs(hs - as);  // evenly matched = better game
+      return { ...g, watchScore: quality * 0.65 + balance * 0.35 };
+    })
+    .sort((a, b) => b.watchScore - a.watchScore)
+    .slice(0, limit);
+}
+
+// Biggest point spreads: the underdogs most likely to make for an upset watch.
+export function computeUnderdogWatch(schedule, limit = 6) {
+  return (schedule || [])
+    .filter(g => !g.completed && g.spread != null && Math.abs(g.spread) > 0)
+    .map(g => {
+      const underdogAbbr = resolveUnderdog(g);
+      const favoriteAbbr = underdogAbbr ? (underdogAbbr === g.home ? g.away : g.home) : null;
+      return { ...g, underdogAbbr, favoriteAbbr, spreadMag: Math.abs(g.spread) };
+    })
+    .sort((a, b) => b.spreadMag - a.spreadMag)
+    .slice(0, limit);
+}
+
+// Plain-language reasons outlining what a game means for the playoff picture.
+// Reads each team's division standing (leader / games back / still alive) and the
+// relationship between the two teams (division, conference, cross-conference).
+export function playoffImplicationReasons(home, away, teams, weekMeta) {
+  const reasons = [];
+  const wr = weeksRemainingFrom(weekMeta);
+  const fmtGb = (gb) => (Number.isInteger(gb) ? String(gb) : gb.toFixed(1));
+  const ctx = (t) => {
+    const gb = gamesBack(t, teams);
+    return { gb, leader: gb === 0, alive: gb <= wr, wp: winPct(t) };
+  };
+  const H = ctx(home), A = ctx(away);
+  const sameDiv = home.conf === away.conf && home.div === away.div;
+  const sameConf = home.conf === away.conf;
+
+  if (sameDiv) {
+    reasons.push(`Division showdown — a direct swing in the ${home.conf} ${home.div} race.`);
+    if (H.leader && A.leader) {
+      reasons.push(`Winner takes sole possession of first place in the ${home.div}.`);
+    } else if (H.leader || A.leader) {
+      const leader = H.leader ? home : away;
+      const chaser = H.leader ? away : home;
+      reasons.push(`${chaser.name} can pull even with the first-place ${leader.name}.`);
+    } else {
+      reasons.push(`Both teams are chasing the ${home.conf} ${home.div} lead.`);
+    }
+  } else if (sameConf) {
+    reasons.push(`${home.conf} clash with wild-card seeding on the line.`);
+  } else {
+    reasons.push(`Cross-conference result shapes playoff tiebreakers and strength of schedule.`);
+  }
+
+  const note = (t, c) => {
+    if (c.leader) return `${t.name} lead the ${t.div} and can build separation.`;
+    if (c.alive) return `${t.name} sit ${fmtGb(c.gb)} back in the ${t.div} — every game counts.`;
+    return null;
+  };
+  const nh = note(home, H); if (nh) reasons.push(nh);
+  const na = note(away, A); if (na) reasons.push(na);
+
+  if (H.wp >= 0.6 && A.wp >= 0.6) {
+    reasons.push(`Two winning teams — a likely January seeding tiebreaker.`);
+  }
+  return reasons.slice(0, 3);
+}
+
+// League-wide playoff implications: rank upcoming games by how much they swing the
+// overall playoff picture, independent of any favorite team. A game matters most
+// when both teams are still alive in their division race and playing well — two
+// contenders meeting is a seeding/berth swing game. Uses win pct + games-back to
+// gauge stakes and team strength to gauge quality. Each game carries plain-language
+// reasons outlining its playoff stakes.
+export function computePlayoffImplications(schedule, teams, weekMeta, strengths, limit = 6) {
+  const wr = weeksRemainingFrom(weekMeta);
+  const contention = (t) => {
+    if (!t) return 0;
+    const alive = gamesBack(t, teams) <= wr ? 1 : 0; // still in the division hunt
+    // Winning teams have the most at stake for seeding/berths.
+    return alive * (0.4 + winPct(t));
+  };
+  return (schedule || [])
+    .filter(g => !g.completed && teams?.[g.home] && teams?.[g.away])
+    .map(g => {
+      const ch = contention(teams[g.home]);
+      const ca = contention(teams[g.away]);
+      const stakes = (ch + ca) / 2;              // both in the hunt = high stakes
+      const headToHead = Math.min(ch, ca);       // two contenders = swing game
+      const sh = strengths?.[g.home]?.strengthScore ?? 0.5;
+      const sa = strengths?.[g.away]?.strengthScore ?? 0.5;
+      const quality = (sh + sa) / 2;
+      const implicationScore = stakes * 0.5 + headToHead * 0.3 + quality * 0.2;
+      const reasons = playoffImplicationReasons(teams[g.home], teams[g.away], teams, weekMeta);
+      return { ...g, implicationScore, reasons };
+    })
+    .sort((a, b) => b.implicationScore - a.implicationScore)
+    .slice(0, limit);
+}
