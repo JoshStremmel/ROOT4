@@ -1,0 +1,74 @@
+@prefix rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:     <http://www.w3.org/2002/07/owl#> .
+@prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
+@prefix mlb:     <urn:mlb:> .
+@prefix team:    <urn:mlb:team:> .
+@prefix game:    <urn:mlb:game:> .
+@prefix outcome: <urn:mlb:outcome:> .
+@prefix impact:  <urn:mlb:impact:> .
+
+# ─────────────────────────────────────────
+# Core Classes
+# ─────────────────────────────────────────
+
+mlb:Team a owl:Class ;
+    rdfs:label "MLB Team" ;
+    rdfs:comment "An MLB franchise that is a first-class holon in the knowledge graph." .
+
+mlb:Game a owl:Class ;
+    rdfs:label "MLB Game" ;
+    rdfs:comment "A scheduled or completed MLB game event." .
+
+mlb:Outcome a owl:Class ;
+    rdfs:label "Game Outcome" ;
+    rdfs:comment "The result of a completed game (win/loss for a specific team)." .
+
+mlb:League a owl:Class ;
+    rdfs:label "League" ;
+    rdfs:comment "American League (AL) or National League (NL)." .
+
+mlb:Division a owl:Class ;
+    rdfs:label "Division" ;
+    rdfs:comment "One of the six MLB divisions (AL/NL East, Central, West)." .
+
+# ─────────────────────────────────────────
+# Team Properties
+# ─────────────────────────────────────────
+
+mlb:name         a owl:DatatypeProperty ; rdfs:domain mlb:Team ; rdfs:range xsd:string .
+mlb:abbreviation a owl:DatatypeProperty ; rdfs:domain mlb:Team ; rdfs:range xsd:string .
+mlb:location     a owl:DatatypeProperty ; rdfs:domain mlb:Team ; rdfs:range xsd:string .
+mlb:wins         a owl:DatatypeProperty ; rdfs:range xsd:integer .
+mlb:losses       a owl:DatatypeProperty ; rdfs:range xsd:integer .
+mlb:winPct       a owl:DatatypeProperty ; rdfs:range xsd:float .
+mlb:runsFor      a owl:DatatypeProperty ; rdfs:range xsd:integer .
+mlb:runsAgainst  a owl:DatatypeProperty ; rdfs:range xsd:integer .
+mlb:strengthScore a owl:DatatypeProperty ; rdfs:range xsd:float .
+mlb:gamesBack    a owl:DatatypeProperty ; rdfs:range xsd:float .
+
+mlb:league       a owl:ObjectProperty ; rdfs:domain mlb:Team ; rdfs:range mlb:League .
+mlb:division     a owl:ObjectProperty ; rdfs:domain mlb:Team ; rdfs:range mlb:Division .
+mlb:divisionalRival a owl:ObjectProperty ; rdfs:domain mlb:Team ; rdfs:range mlb:Team .
+mlb:competesWith a owl:ObjectProperty ; rdfs:domain mlb:Team ; rdfs:range mlb:Team .
+mlb:divisionLeader a owl:ObjectProperty ; rdfs:domain mlb:Division ; rdfs:range mlb:Team .
+mlb:currentlyHolds a owl:ObjectProperty ; rdfs:domain mlb:Team .
+mlb:competesFor  a owl:ObjectProperty ; rdfs:domain mlb:Team .
+
+# ─────────────────────────────────────────
+# Game / Outcome Properties
+# ─────────────────────────────────────────
+
+mlb:homeTeam   a owl:ObjectProperty ; rdfs:domain mlb:Game ; rdfs:range mlb:Team .
+mlb:awayTeam   a owl:ObjectProperty ; rdfs:domain mlb:Game ; rdfs:range mlb:Team .
+mlb:homeScore  a owl:DatatypeProperty ; rdfs:range xsd:integer .
+mlb:awayScore  a owl:DatatypeProperty ; rdfs:range xsd:integer .
+mlb:status     a owl:DatatypeProperty ; rdfs:range xsd:string .
+mlb:winner     a owl:ObjectProperty ; rdfs:range mlb:Team .
+mlb:loser      a owl:ObjectProperty ; rdfs:range mlb:Team .
+mlb:hasOutcome a owl:ObjectProperty ; rdfs:domain mlb:Game ; rdfs:range mlb:Outcome .
+
+impact:improvesOdds a owl:ObjectProperty ; rdfs:range mlb:Team .
+impact:reducesOdds  a owl:ObjectProperty ; rdfs:range mlb:Team .
+impact:affects      a owl:ObjectProperty ; rdfs:range mlb:Team .
+impact:score        a owl:DatatypeProperty ; rdfs:range xsd:float .

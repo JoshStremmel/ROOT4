@@ -74,11 +74,45 @@ export interface StandingEntry {
 }
 
 export interface StandingsResult {
-  AFC: Array<{ seed: number; team: string; kind: string }>;
-  NFC: Array<{ seed: number; team: string; kind: string }>;
+  /** One entry array per conference key (AFC/NFC for NFL, AL/NL for MLB). */
   byTeam: Record<string, StandingEntry>;
   divisions: Record<string, Record<string, TeamData[]>>;
+  [conf: string]: any;
 }
+
+/** Static per-league config threaded through the engine's pure functions. */
+export interface LeagueConfig {
+  id: string;
+  name: string;
+  sportPath: string;
+  espnSport: string;
+  gamesPerSeason: number;
+  conferences: string[];
+  divisionOrder: string[];
+  wildcards: number;
+  byes: number;
+  playoffSeeds: number;
+  tiesAllowed: boolean;
+  periodNoun: string;
+  periodLabelThisWeek: string;
+  tiebreakerProcedures: Record<string, { tag: string; title: string; steps: string[] }>;
+}
+
+/** A league module: its statics plus its LEAGUE config. */
+export interface LeagueModule {
+  DIVISIONS: Record<string, [string, string]>;
+  ABBR_ALIAS: Record<string, string>;
+  normAbbr(a: string): string;
+  TEAM_COLOR_FALLBACK: Record<string, string>;
+  MODES: ModeDefinition[];
+  CATEGORY_META: Record<string, CategoryMeta>;
+  STRENGTH_WEIGHT: { high: number; medium: number; low: number };
+  STRENGTH_META: Record<string, StrengthMeta>;
+  LEAGUE: LeagueConfig;
+}
+
+export declare const LEAGUES: Record<string, LeagueModule>;
+export declare function getLeague(id?: string): LeagueModule;
 
 export interface TiebreakerEntry {
   over: string[];
@@ -123,7 +157,7 @@ export declare function maxWins(team: TeamData, weekMeta: WeekMeta): number;
 export declare function resolveUnderdog(g: ScheduleGame): string | null;
 
 export declare function buildTeamStrengths(teams: Record<string, TeamData>): Record<string, TeamStrength>;
-export declare function computeTiebreakerReasons(rawTeams: Record<string, TeamData>): Record<string, TiebreakerEntry>;
+export declare function computeTiebreakerReasons(rawTeams: Record<string, TeamData>, league?: LeagueConfig): Record<string, TiebreakerEntry>;
 
 export interface MultiTieEntry {
   abbr: string;
@@ -150,11 +184,11 @@ export interface MultiTieResult {
  * division, or wild-card steps (with per-division reduction) otherwise.
  */
 export declare function resolveMultiTie(tiedAbbrs: string[], teams: Record<string, TeamData>): MultiTieResult;
-export declare function computeStandings(teams: Record<string, TeamData>, tiebreakerReasons: Record<string, TiebreakerEntry>): StandingsResult;
-export declare function availableModes(favAbbr: string, teams: Record<string, TeamData>, weekMeta: WeekMeta): string[];
-export declare function favTeamGame(favAbbr: string, mode: string, teams: Record<string, TeamData>, schedule: ScheduleGame[], weekMeta: WeekMeta): object | null;
-export declare function ownGameImpact(favAbbr: string, mode: string, teams: Record<string, TeamData>, weekMeta: WeekMeta): number;
+export declare function computeStandings(teams: Record<string, TeamData>, tiebreakerReasons: Record<string, TiebreakerEntry>, league?: LeagueConfig): StandingsResult;
+export declare function availableModes(favAbbr: string, teams: Record<string, TeamData>, weekMeta: WeekMeta, league?: LeagueConfig): string[];
+export declare function favTeamGame(favAbbr: string, mode: string, teams: Record<string, TeamData>, schedule: ScheduleGame[], weekMeta: WeekMeta, league?: LeagueConfig): object | null;
+export declare function ownGameImpact(favAbbr: string, mode: string, teams: Record<string, TeamData>, weekMeta: WeekMeta, league?: LeagueConfig): number;
 
-export declare function modeScore(candidate: string, opponent: string, fav: TeamData, mode: string, dislikes: string[], teams: Record<string, TeamData>, weekMeta: WeekMeta): number;
-export declare function computeRecommendations(favAbbr: string, dislikes: string[], mode: string, teams: Record<string, TeamData>, schedule: ScheduleGame[], strengths: Record<string, TeamStrength>, weekMeta: WeekMeta): object[];
-export declare function computeScenarios(favAbbr: string, teams: Record<string, TeamData>, schedule: ScheduleGame[], weekMeta: WeekMeta): object[];
+export declare function modeScore(candidate: string, opponent: string, fav: TeamData, mode: string, dislikes: string[], teams: Record<string, TeamData>, weekMeta: WeekMeta, league?: LeagueConfig): number;
+export declare function computeRecommendations(favAbbr: string, dislikes: string[], mode: string, teams: Record<string, TeamData>, schedule: ScheduleGame[], strengths: Record<string, TeamStrength>, weekMeta: WeekMeta, league?: LeagueConfig): object[];
+export declare function computeScenarios(favAbbr: string, teams: Record<string, TeamData>, schedule: ScheduleGame[], weekMeta: WeekMeta, league?: LeagueConfig): object[];

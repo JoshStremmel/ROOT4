@@ -16,3 +16,12 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(ROOT / "builders"))
 sys.path.insert(0, str(ROOT / "queries"))
 sys.path.insert(0, str(ROOT / "tests"))
+
+# A second league (leagues/mlb) exposes identically-named bare modules
+# (espn_fetcher, rdf_builder, fixtures, …). When `pytest leagues` collects both
+# suites in one process, drop any cached copies so this league's tests re-import
+# from the dirs prepended above rather than the other league's stale modules.
+for _m in ("espn_fetcher", "rdf_builder", "team_strength", "fixtures",
+           "season_ingester", "day_ingester", "recommendation_engine",
+           "scenario_builder", "sparql_queries"):
+    sys.modules.pop(_m, None)

@@ -14,15 +14,30 @@
  * category/strength metadata live in leagues/nfl/nfl.js — a future league
  * (e.g. leagues/nba/nba.js) would define its own version of these and get
  * selected here instead. Everything below this block is league-agnostic. */
-import {
-  DIVISIONS, ABBR_ALIAS, normAbbr, TEAM_COLOR_FALLBACK,
-  MODES, CATEGORY_META, STRENGTH_WEIGHT, STRENGTH_META,
-} from "./leagues/nfl/nfl.js";
+import * as nflLeague from "./leagues/nfl/nfl.js";
+import * as mlbLeague from "./leagues/mlb/mlb.js";
 
-export {
+/* ─── League registry ────────────────────────────────────────────────────── *
+ * The engine can serve either league at runtime. src/data.js picks one by
+ * sport and threads its LEAGUE config object into every function below as the
+ * `league` parameter, replacing the constants that used to be hard-coded here. */
+export const LEAGUES = {
+  nfl: nflLeague,
+  mlb: mlbLeague,
+};
+export function getLeague(id = "nfl") {
+  return LEAGUES[id] || LEAGUES.nfl;
+}
+
+// Default league config for back-compat call sites (graph app is NFL-only).
+const DEFAULT_LEAGUE = nflLeague.LEAGUE;
+
+// Re-export the NFL statics as the default named exports so existing importers
+// (the graph app, and any NFL-only consumer) keep working unchanged.
+export const {
   DIVISIONS, ABBR_ALIAS, normAbbr, TEAM_COLOR_FALLBACK,
   MODES, CATEGORY_META, STRENGTH_WEIGHT, STRENGTH_META,
-};
+} = nflLeague;
 
 /* ─── Core helpers ───────────────────────────────────────────────────────── */
 
@@ -95,11 +110,22 @@ export function buildTeamStrengths(teams) {
   const pds = Object.values(raw).map(r => r.pd);
   const minPd = Math.min(...pds, 0), maxPd = Math.max(...pds, 0);
   const range = (maxPd - minPd) || 1;
+  // Win pct is the primary quality signal, but its *absolute* scale is
+  // league-dependent: NFL contenders sit near .800 while a great baseball team
+  // is barely above .550 (162 games make undefeated runs impossible). Scoring
+  // raw win pct therefore squashed every MLB team toward ~50. Instead, rank each
+  // team's win pct *within its own league's spread* so strength reflects how a
+  // team actually stacks up against its peers — a 6th-best club reads as strong,
+  // not average. This is self-calibrating, so it works for any league.
+  const wps = Object.values(raw).map(r => r.wp);
+  const minWp = Math.min(...wps), maxWp = Math.max(...wps);
+  const wpRange = (maxWp - minWp) || 1;
   for (const abbr of Object.keys(raw)) {
     const r = raw[abbr];
     const pointDiff = (r.pd - minPd) / range;
+    const wpNorm = (r.wp - minWp) / wpRange;   // 0 = league-worst record, 1 = league-best
     const strengthScore = Math.max(0, Math.min(1,
-      0.35 * r.wp + 0.25 * pointDiff + 0.15 * r.recentWp + 0.10 * r.consistency + 0.10 * r.divBonus + 0.05 * r.sos
+      0.45 * wpNorm + 0.25 * pointDiff + 0.15 * r.recentWp + 0.05 * r.consistency + 0.05 * r.divBonus + 0.05 * r.sos
     ));
     out[abbr] = {
       strengthScore: +strengthScore.toFixed(2),
@@ -115,8 +141,9 @@ export function buildTeamStrengths(teams) {
 
 /* ─── Tiebreakers ────────────────────────────────────────────────────────── */
 
-export function computeTiebreakerReasons(rawTeams) {
+export function computeTiebreakerReasons(rawTeams, league = DEFAULT_LEAGUE) {
   if (!rawTeams) return {};
+  if (league.id === "mlb") return _mlbTiebreakerReasons(rawTeams, league);
 
   const pctOf = (res) => {
     if (!res || !res.length) return null;
@@ -265,7 +292,7 @@ export function computeTiebreakerReasons(rawTeams) {
   };
 
   const allPool = Object.values(rawTeams);
-  for (const conf of ["AFC", "NFC"]) {
+  for (const conf of league.conferences) {
     const confPool = allPool.filter(t => t.conf === conf);
     const byRecord = {};
     for (const t of confPool) {
@@ -285,6 +312,68 @@ export function computeTiebreakerReasons(rawTeams) {
             const rb = fn(b, a, confPool, allPool);
             if (rb != null && rb !== undefined) addResult(b, a, rb);
           }
+        }
+      }
+    }
+  }
+  return result;
+}
+
+/* ─── MLB tiebreakers ────────────────────────────────────────────────────── *
+ * Baseball scrapped the Game 163 in 2022 — ties are broken mathematically with
+ * the same ordered criteria for division and wild-card ties: head-to-head →
+ * intradivision record → intraleague record. The last-half / last-half+1 steps
+ * need full dated game logs (the Python pipeline's job) and are omitted here;
+ * unresolved pairs simply produce no ordering (falls through to win pct). */
+function _mlbTiebreakerReasons(rawTeams, league) {
+  const recVs = (team, filterFn) => {
+    const res = (team.results || []).filter(filterFn);
+    const w = res.filter(r => r.win).length;
+    return { w, l: res.length - w, pct: res.length ? w / res.length : null };
+  };
+
+  // Returns a reason string when a beats b, null when b beats a, undefined when tied.
+  const brk = (a, b) => {
+    const h2h = (a.results || []).filter(r => r.oppAbbr === b.abbr);
+    const hW = h2h.filter(r => r.win).length, hL = h2h.length - hW;
+    if (h2h.length && hW !== hL) return hW > hL ? `Head-to-head (${hW}-${hL})` : null;
+
+    const aDiv = recVs(a, r => { const o = rawTeams[r.oppAbbr]; return o && o.conf === a.conf && o.div === a.div; });
+    const bDiv = recVs(b, r => { const o = rawTeams[r.oppAbbr]; return o && o.conf === b.conf && o.div === b.div; });
+    if (aDiv.pct !== null && bDiv.pct !== null && Math.abs(aDiv.pct - bDiv.pct) > 1e-6)
+      return aDiv.pct > bDiv.pct ? `Intradivision record (${aDiv.w}-${aDiv.l} vs ${bDiv.w}-${bDiv.l})` : null;
+
+    const aLg = recVs(a, r => rawTeams[r.oppAbbr]?.conf === a.conf);
+    const bLg = recVs(b, r => rawTeams[r.oppAbbr]?.conf === b.conf);
+    if (aLg.pct !== null && bLg.pct !== null && Math.abs(aLg.pct - bLg.pct) > 1e-6)
+      return aLg.pct > bLg.pct ? `Intraleague record (${aLg.w}-${aLg.l} vs ${bLg.w}-${bLg.l})` : null;
+
+    return undefined;
+  };
+
+  const result = {};
+  const add = (winner, loser, reason) => {
+    if (!result[winner.abbr]) result[winner.abbr] = { over: [], reasons: {}, reason };
+    if (!result[winner.abbr].over.includes(loser.abbr)) result[winner.abbr].over.push(loser.abbr);
+    result[winner.abbr].reasons[loser.abbr] = reason;
+  };
+
+  const all = Object.values(rawTeams);
+  for (const conf of league.conferences) {
+    const pool = all.filter(t => t.conf === conf);
+    const byRecord = {};
+    for (const t of pool) {
+      const key = `${t.record[0]}-${t.record[1]}`;
+      (byRecord[key] = byRecord[key] || []).push(t);
+    }
+    for (const group of Object.values(byRecord)) {
+      if (group.length < 2) continue;
+      for (let i = 0; i < group.length; i++) {
+        for (let j = i + 1; j < group.length; j++) {
+          const a = group[i], b = group[j];
+          const reason = brk(a, b);
+          if (reason != null) add(a, b, reason);
+          else if (reason === null) { const rb = brk(b, a); if (rb != null) add(b, a, rb); }
         }
       }
     }
@@ -588,9 +677,10 @@ export function resolveMultiTie(tiedAbbrs, teams) {
 
 /* ─── Standings ──────────────────────────────────────────────────────────── */
 
-export function computeStandings(teams, tiebreakerReasons) {
+export function computeStandings(teams, tiebreakerReasons, league = DEFAULT_LEAGUE) {
   const teamList = Object.values(teams || {});
   const tb = tiebreakerReasons || {};
+  const wc = league.wildcards;
 
   const sortByPct = (a, b) => {
     const pd = winPct(b) - winPct(a);
@@ -604,35 +694,39 @@ export function computeStandings(teams, tiebreakerReasons) {
   const gb = (leader, team) =>
     ((leader.record[0] - team.record[0]) + (team.record[1] - leader.record[1])) / 2;
 
-  const out = { AFC: [], NFC: [], byTeam: {}, divisions: {} };
+  const out = { byTeam: {}, divisions: {} };
+  for (const conf of league.conferences) out[conf] = [];
 
-  for (const conf of ["AFC", "NFC"]) {
+  for (const conf of league.conferences) {
     const divs = {};
     for (const t of teamList.filter(t => t.conf === conf)) (divs[t.div] = divs[t.div] || []).push(t);
     for (const d of Object.keys(divs)) divs[d].sort(sortByPct);
     out.divisions[conf] = divs;
 
-    const order = ["East", "North", "South", "West"].filter(d => divs[d]);
+    const order = league.divisionOrder.filter(d => divs[d]);
+    // Division winners take the first seeds (one per division), sorted by record.
     const winners = order.map(d => divs[d][0]).filter(Boolean).sort(sortByPct);
     winners.forEach((t, i) => {
       out[conf].push({ seed: i + 1, team: t.abbr, kind: "division" });
       out.byTeam[t.abbr] = { seed: i + 1, kind: "division", conf };
     });
+    // Wild cards take the next `wc` seeds after the division winners.
+    const wcStart = winners.length;
     const winnersSet = new Set(winners.map(t => t.abbr));
     const rest = teamList.filter(t => t.conf === conf && !winnersSet.has(t.abbr)).sort(sortByPct);
-    for (let i = 0; i < 3 && i < rest.length; i++) {
-      out[conf].push({ seed: 5 + i, team: rest[i].abbr, kind: "wildcard" });
-      out.byTeam[rest[i].abbr] = { seed: 5 + i, kind: "wildcard", conf };
+    for (let i = 0; i < wc && i < rest.length; i++) {
+      out[conf].push({ seed: wcStart + 1 + i, team: rest[i].abbr, kind: "wildcard" });
+      out.byTeam[rest[i].abbr] = { seed: wcStart + 1 + i, kind: "wildcard", conf };
     }
-    const lastWC = rest[2];
-    for (let i = 3; i < rest.length; i++) {
+    const lastWC = rest[wc - 1];
+    for (let i = wc; i < rest.length; i++) {
       const g = lastWC ? gb(lastWC, rest[i]) : null;
       out.byTeam[rest[i].abbr] = { seed: null, kind: "out", conf, gamesBehind: g > 0 ? g : null };
     }
   }
 
-  for (const conf of ["AFC", "NFC"]) {
-    for (const div of ["North", "South", "East", "West"]) {
+  for (const conf of league.conferences) {
+    for (const div of league.divisionOrder) {
       const divTeams = (out.divisions[conf] || {})[div];
       if (!divTeams || !divTeams.length) continue;
       const leader = divTeams[0];
@@ -648,7 +742,7 @@ export function computeStandings(teams, tiebreakerReasons) {
 
 /* ─── Available modes ────────────────────────────────────────────────────── */
 
-export function availableModes(favAbbr, teams, weekMeta) {
+export function availableModes(favAbbr, teams, weekMeta, league = DEFAULT_LEAGUE) {
   const fav = teams[favAbbr];
   if (!fav) return ["overall", "tank"];
   const wr = weeksRemainingFrom(weekMeta);
@@ -657,7 +751,7 @@ export function availableModes(favAbbr, teams, weekMeta) {
   const divPeers = Object.values(teams).filter(t => t.conf === fav.conf && t.div === fav.div && t.abbr !== favAbbr);
   if (divPeers.every(p => p.record[0] <= mxW(fav))) all.push("division");
   const confNonDiv = Object.values(teams).filter(t => t.conf === fav.conf && t.div !== fav.div && t.abbr !== favAbbr);
-  if (confNonDiv.filter(t => t.record[0] > mxW(fav)).length < 3) all.push("wildcard");
+  if (confNonDiv.filter(t => t.record[0] > mxW(fav)).length < league.wildcards) all.push("wildcard");
   const confPeers = Object.values(teams).filter(t => t.conf === fav.conf && t.abbr !== favAbbr);
   if (confPeers.every(p => p.record[0] <= mxW(fav))) all.push("conf_one_seed");
   all.push("tank");
@@ -666,7 +760,7 @@ export function availableModes(favAbbr, teams, weekMeta) {
 
 /* ─── Favorite team's own game ───────────────────────────────────────────── */
 
-export function favTeamGame(favAbbr, mode = "overall", teams, schedule, weekMeta) {
+export function favTeamGame(favAbbr, mode = "overall", teams, schedule, weekMeta, league = DEFAULT_LEAGUE) {
   const ours = (schedule || []).filter(g => g.home === favAbbr || g.away === favAbbr);
   if (!ours.length) return null;
   const upcoming = ours.find(g => !g.completed);
@@ -692,6 +786,8 @@ export function favTeamGame(favAbbr, mode = "overall", teams, schedule, weekMeta
 
   const fGB = gamesBack(fav, teams);
   const wr = weeksRemainingFrom(weekMeta);
+  const per = (n) => `${n} ${league.periodNoun}${n !== 1 ? 's' : ''} left`;
+  const topSeedLabel = league.byes > 1 ? `top-${league.byes} seed` : `#1 seed`;
   const isDivRival = opp.div === fav.div && opp.conf === fav.conf;
 
   let blurb = "";
@@ -704,7 +800,7 @@ export function favTeamGame(favAbbr, mode = "overall", teams, schedule, weekMeta
         .filter(t => t.conf === fav.conf && t.div === fav.div && t.abbr !== favAbbr)
         .every(r => {
           const rPlayed = r.record[0] + r.record[1] + (r.record[2] || 0);
-          return (fav.record[0] + 1) > (r.record[0] + Math.max(0, 17 - rPlayed));
+          return (fav.record[0] + 1) > (r.record[0] + Math.max(0, league.gamesPerSeason - rPlayed));
         });
       if (winClinches) {
         blurb = isDivRival
@@ -712,18 +808,18 @@ export function favTeamGame(favAbbr, mode = "overall", teams, schedule, weekMeta
           : `Win to CLINCH the ${fav.div} division title!`;
       } else {
         blurb = isDivRival
-          ? `Win to extend your division lead over ${oppAbbr} (${gamesBack(opp, teams).toFixed(1)} GB behind, ${wr} week${wr !== 1 ? 's' : ''} left).`
-          : `Win to stay atop the ${fav.div} (${wr} week${wr !== 1 ? 's' : ''} left).`;
+          ? `Win to extend your division lead over ${oppAbbr} (${gamesBack(opp, teams).toFixed(1)} games behind, ${per(wr)}).`
+          : `Win to stay atop the ${fav.div} (${per(wr)}).`;
       }
     } else {
       blurb = isDivRival
-        ? `Win to cut the gap — ${favAbbr} is ${fGB.toFixed(1)} GB back with ${wr} week${wr !== 1 ? 's' : ''} left.`
-        : `Win to stay in the ${fav.div} race (${fGB.toFixed(1)} GB back, ${wr} week${wr !== 1 ? 's' : ''} left).`;
+        ? `Win to cut the gap — ${favAbbr} is ${fGB.toFixed(1)} games back with ${per(wr)}.`
+        : `Win to stay in the ${fav.div} race (${fGB.toFixed(1)} games back, ${per(wr)}).`;
     }
   } else if (mode === "conf_one_seed") {
     const leader = Object.values(teams).filter(t => t.conf === fav.conf)
       .reduce((a, b) => b.record[0] > a.record[0] ? b : a, fav);
-    blurb = `Win to chase the ${fav.conf} #1 seed (${leader.record[0] - fav.record[0]}W behind ${leader.abbr}, ${wr} weeks left).`;
+    blurb = `Win to chase the ${fav.conf} ${topSeedLabel} (${leader.record[0] - fav.record[0]}W behind ${leader.abbr}, ${per(wr)}).`;
   } else {
     blurb = `Win to strengthen your ${fav.conf} wildcard position.`;
   }
@@ -737,24 +833,24 @@ export function favTeamGame(favAbbr, mode = "overall", teams, schedule, weekMeta
 
 /* ─── Own-game impact score ──────────────────────────────────────────────── */
 
-export function ownGameImpact(favAbbr, mode, teams, weekMeta) {
+export function ownGameImpact(favAbbr, mode, teams, weekMeta, league = DEFAULT_LEAGUE) {
   const fav = teams?.[favAbbr];
   if (!fav) return 1.0;
   const gamesPlayed = fav.record[0] + fav.record[1] + (fav.record[2] || 0);
-  const rem = Math.max(0, 17 - gamesPlayed);
+  const rem = Math.max(0, league.gamesPerSeason - gamesPlayed);
   if (rem === 0) return 0;
   if (mode === "tank") return 1.0;
   const confTeams = Object.values(teams).filter(t => t.conf === fav.conf && t.abbr !== favAbbr);
   const maxFavWins = fav.record[0] + rem;
-  const eliminated = confTeams.filter(t => t.record[0] > maxFavWins).length >= 7;
+  const eliminated = confTeams.filter(t => t.record[0] > maxFavWins).length >= league.playoffSeeds;
   if (eliminated) return 0;
   if (mode === "conf_one_seed") {
-    const tiebreakerReasons = computeTiebreakerReasons(teams);
-    const standings = computeStandings(teams, tiebreakerReasons);
+    const tiebreakerReasons = computeTiebreakerReasons(teams, league);
+    const standings = computeStandings(teams, tiebreakerReasons, league);
     const seed = standings.byTeam[favAbbr] || {};
-    if (seed.seed === 1) {
+    if (seed.seed != null && seed.seed <= league.byes) {
       const closest = confTeams.slice().sort((a, b) => b.record[0] - a.record[0])[0];
-      if (!closest || closest.record[0] + (Math.max(0, 17 - (closest.record[0] + closest.record[1] + (closest.record[2] || 0)))) < fav.record[0]) return 0;
+      if (!closest || closest.record[0] + (Math.max(0, league.gamesPerSeason - (closest.record[0] + closest.record[1] + (closest.record[2] || 0)))) < fav.record[0]) return 0;
     }
   }
   return 1.0;
@@ -764,18 +860,18 @@ export function ownGameImpact(favAbbr, mode, teams, weekMeta) {
 
 // True when a team is mathematically eliminated from all playoff contention:
 // 7+ conference teams already have more wins than this team can possibly reach.
-function _elimFromPlayoffs(team, teams) {
+function _elimFromPlayoffs(team, teams, league = DEFAULT_LEAGUE) {
   const played = team.record[0] + team.record[1] + (team.record[2] || 0);
-  const maxWins = team.record[0] + Math.max(0, 17 - played);
+  const maxWins = team.record[0] + Math.max(0, league.gamesPerSeason - played);
   const confPeers = Object.values(teams).filter(t => t.conf === team.conf && t.abbr !== team.abbr);
-  return confPeers.filter(t => t.record[0] > maxWins).length >= 7;
+  return confPeers.filter(t => t.record[0] > maxWins).length >= league.playoffSeeds;
 }
 
 // True when a team is mathematically eliminated from winning their division:
 // a divisional rival already has more wins than this team can possibly reach.
-function _elimFromDivision(team, teams) {
+function _elimFromDivision(team, teams, league = DEFAULT_LEAGUE) {
   const played = team.record[0] + team.record[1] + (team.record[2] || 0);
-  const maxWins = team.record[0] + Math.max(0, 17 - played);
+  const maxWins = team.record[0] + Math.max(0, league.gamesPerSeason - played);
   return Object.values(teams).some(
     t => t.conf === team.conf && t.div === team.div && t.abbr !== team.abbr && t.record[0] > maxWins
   );
@@ -783,38 +879,52 @@ function _elimFromDivision(team, teams) {
 
 // True when a team has clinched their division: their current wins exceed
 // the maximum possible wins of every divisional rival.
-function _clinched(team, teams) {
+function _clinched(team, teams, league = DEFAULT_LEAGUE) {
   const rivals = Object.values(teams).filter(t => t.conf === team.conf && t.div === team.div && t.abbr !== team.abbr);
   if (!rivals.length) return false;
   return rivals.every(r => {
     const rPlayed = r.record[0] + r.record[1] + (r.record[2] || 0);
-    return team.record[0] > r.record[0] + Math.max(0, 17 - rPlayed);
+    return team.record[0] > r.record[0] + Math.max(0, league.gamesPerSeason - rPlayed);
   });
+}
+
+// Abbreviations of the current division leaders (by win pct) in a conference.
+// A division leader is on track for a division seed, so for wild-card purposes
+// they sit *outside* the wild-card pool — they're not teams you race for a WC.
+function _divLeaderAbbrs(teams, conf) {
+  const set = new Set();
+  const divs = [...new Set(Object.values(teams).filter(t => t.conf === conf).map(t => t.div))];
+  for (const div of divs) {
+    const divTeams = Object.values(teams).filter(t => t.conf === conf && t.div === div);
+    if (!divTeams.length) continue;
+    const leader = divTeams.reduce((best, t) => winPct(t) > winPct(best) ? t : best, divTeams[0]);
+    set.add(leader.abbr);
+  }
+  return set;
+}
+
+// True when a team currently leads its division (holds the projected division seed).
+function _isDivLeader(team, teams) {
+  return _divLeaderAbbrs(teams, team.conf).has(team.abbr);
 }
 
 // True when a non-division-leader team is eliminated from wild card contention:
 // 3+ other non-division-leader conference teams already have more wins than this team
 // can possibly reach. Division leaders compete for div seeds rather than WC spots, so
 // they're excluded from the blocker count.
-function _elimFromWildcard(team, teams) {
+function _elimFromWildcard(team, teams, league = DEFAULT_LEAGUE) {
   const played = team.record[0] + team.record[1] + (team.record[2] || 0);
-  const maxWins = team.record[0] + Math.max(0, 17 - played);
+  const maxWins = team.record[0] + Math.max(0, league.gamesPerSeason - played);
   const conf = team.conf;
-  const divLeaderAbbrs = new Set();
-  const divs = [...new Set(Object.values(teams).filter(t => t.conf === conf).map(t => t.div))];
-  for (const div of divs) {
-    const divTeams = Object.values(teams).filter(t => t.conf === conf && t.div === div);
-    const leader = divTeams.reduce((best, t) => winPct(t) > winPct(best) ? t : best, divTeams[0]);
-    divLeaderAbbrs.add(leader.abbr);
-  }
+  const divLeaderAbbrs = _divLeaderAbbrs(teams, conf);
   if (divLeaderAbbrs.has(team.abbr)) return false;
   const rivals = Object.values(teams).filter(
     t => t.conf === conf && t.abbr !== team.abbr && !divLeaderAbbrs.has(t.abbr)
   );
-  return rivals.filter(t => t.record[0] > maxWins).length >= 3;
+  return rivals.filter(t => t.record[0] > maxWins).length >= league.wildcards;
 }
 
-export function modeScore(candidate, opponent, fav, mode, dislikes, teams, weekMeta) {
+export function modeScore(candidate, opponent, fav, mode, dislikes, teams, weekMeta, league = DEFAULT_LEAGUE) {
   const o = teams[opponent];
   if (!o) return 0;
   const isSameDiv = o.div === fav.div && o.conf === fav.conf;
@@ -825,21 +935,33 @@ export function modeScore(candidate, opponent, fav, mode, dislikes, teams, weekM
 
   if (mode === "division") {
     // Score only when both teams are mathematically alive in their division race.
-    if (isSameDiv && !_elimFromDivision(fav, teams) && !_elimFromDivision(o, teams)) {
+    if (isSameDiv && !_elimFromDivision(fav, teams, league) && !_elimFromDivision(o, teams, league)) {
       const urgency = Math.max(0, 1 - favGB / Math.max(wr, 1));
       score += 0.25 + 0.25 * urgency;
     }
   } else if (mode === "wildcard") {
     // Clinched teams hold a division seed and are no longer in the wild card pool.
-    if (isSameConf && !_elimFromPlayoffs(o, teams) && !_clinched(o, teams)) score += 0.20;
+    if (isSameConf && !_elimFromPlayoffs(o, teams, league) && !_clinched(o, teams, league)) {
+      if (_isDivLeader(o, teams)) {
+        // A division leader is bound for a division seed, not a wild card — beating
+        // them barely moves your wild-card math, so give it only nominal weight.
+        score += 0.05;
+      } else {
+        // A genuine wild-card competitor. Rooting against a team that is at or
+        // ahead of you in the race matters most (their loss lets you pass them);
+        // teams behind you are a smaller — but still positive — cushion play.
+        const ahead = winPct(o) >= winPct(fav) - 1e-6;
+        score += ahead ? 0.25 : 0.15;
+      }
+    }
   } else if (mode === "conf_one_seed") {
-    if (isSameConf && !_elimFromPlayoffs(o, teams)) score += 0.20 + 0.10 * Math.min(o.record[0] / 17, 1);
+    if (isSameConf && !_elimFromPlayoffs(o, teams, league)) score += 0.20 + 0.10 * Math.min(o.record[0] / league.gamesPerSeason, 1);
   } else { // overall
-    if (isSameDiv && !_elimFromDivision(fav, teams) && !_elimFromDivision(o, teams)) {
+    if (isSameDiv && !_elimFromDivision(fav, teams, league) && !_elimFromDivision(o, teams, league)) {
       // Division race is active for both — weight by urgency
       const urgency = Math.max(0, 1 - favGB / Math.max(wr, 1));
       score += 0.20 + 0.20 * urgency;
-    } else if (isSameConf && !_elimFromPlayoffs(o, teams) && !_clinched(o, teams)) {
+    } else if (isSameConf && !_elimFromPlayoffs(o, teams, league) && !_clinched(o, teams, league)) {
       // Conference competitor (including div rivals who fell out of the div race)
       score += 0.20;
     }
@@ -848,7 +970,7 @@ export function modeScore(candidate, opponent, fav, mode, dislikes, teams, weekM
   // definitely in the playoffs and their result still affects seed position.
   // Only applies to clinched teams — eliminated-but-not-clinched teams have
   // no playoff relevance and should score 0.
-  if (score < 0.06 && isSameConf && !_elimFromPlayoffs(fav, teams) && _clinched(o, teams)) {
+  if (score < 0.06 && isSameConf && !_elimFromPlayoffs(fav, teams, league) && _clinched(o, teams, league)) {
     score = 0.06;
   }
   if (dislikes.includes(opponent)) score += 0.15;
@@ -857,7 +979,7 @@ export function modeScore(candidate, opponent, fav, mode, dislikes, teams, weekM
   return score;
 }
 
-export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents, teams, weekMeta) {
+export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents, teams, weekMeta, league = DEFAULT_LEAGUE) {
   const out = [];
   const homeT = teams[home], awayT = teams[away];
 
@@ -869,20 +991,28 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
     const gb = ((fav.record[0] - rival.record[0]) + (rival.record[1] - fav.record[1])) / 2;
     if (Math.abs(gb) < 0.1) return `tied with you in the ${fav.div}`;
     return gb > 0
-      ? `${gb.toFixed(1)} GB behind you in the ${fav.div}`
-      : `${(-gb).toFixed(1)} GB ahead of you in the ${fav.div}`;
+      ? `${gb.toFixed(1)} games behind you in the ${fav.div}`
+      : `${(-gb).toFixed(1)} games ahead of you in the ${fav.div}`;
   };
-  if (homeIsDivRival && awayIsDivRival) {
+  // Blanket "root against any division rival" only makes sense while winning the
+  // division is a live goal. In Wild Card mode the division title is explicitly
+  // off the table, and once the fav can no longer catch its division it's chasing
+  // a wild card too — in both cases a division rival is judged by the wild-card
+  // logic below (a rival leading the division is NOT a wild-card competitor, so
+  // rooting against them can even backfire). Guarding here fixes the case where
+  // WC-mode wrongly told you to root for a rival that sits ahead of you in the WC.
+  const favChasingDivision = mode !== "wildcard" && !_elimFromDivision(fav, teams, league);
+  if (favChasingDivision && homeIsDivRival && awayIsDivRival) {
     // Prefer the rival that's still alive in the division race as the "bigger threat".
     // If both or neither are alive, fall back to win pct.
-    const homeAlive = !_elimFromDivision(homeT, teams);
-    const awayAlive = !_elimFromDivision(awayT, teams);
+    const homeAlive = !_elimFromDivision(homeT, teams, league);
+    const awayAlive = !_elimFromDivision(awayT, teams, league);
     const biggerThreat = homeAlive && !awayAlive ? home
                        : awayAlive && !homeAlive ? away
                        : winPct(homeT) >= winPct(awayT) ? home : away;
     const rootSide = biggerThreat === home ? away : home;
     const bt = teams[biggerThreat];
-    const btAlive = !_elimFromDivision(bt, teams);
+    const btAlive = !_elimFromDivision(bt, teams, league);
     out.push({
       root_for: rootSide, against: biggerThreat,
       category: "DivisionRivalTank", strength: "high", strength_weight: 0.50,
@@ -890,14 +1020,14 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
         ? `${biggerThreat} (${bt.record[0]}-${bt.record[1]}, ${_divGB(bt)}) is the bigger division threat`
         : `${biggerThreat} (${bt.record[0]}-${bt.record[1]}) is a division rival`,
     });
-  } else if (homeIsDivRival) {
-    const alive = !_elimFromDivision(homeT, teams);
+  } else if (favChasingDivision && homeIsDivRival) {
+    const alive = !_elimFromDivision(homeT, teams, league);
     out.push({ root_for: away, against: home, category: "DivisionRivalTank", strength: "high", strength_weight: 0.50,
       why: alive
         ? `${home} (${homeT.record[0]}-${homeT.record[1]}) is a division rival, ${_divGB(homeT)}`
         : `${home} (${homeT.record[0]}-${homeT.record[1]}) is a division rival` });
-  } else if (awayIsDivRival) {
-    const alive = !_elimFromDivision(awayT, teams);
+  } else if (favChasingDivision && awayIsDivRival) {
+    const alive = !_elimFromDivision(awayT, teams, league);
     out.push({ root_for: home, against: away, category: "DivisionRivalTank", strength: "high", strength_weight: 0.50,
       why: alive
         ? `${away} (${awayT.record[0]}-${awayT.record[1]}) is a division rival, ${_divGB(awayT)}`
@@ -917,13 +1047,18 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
   }
 
   if (mode !== "division") {
+    // When the fav is chasing a wild card (Overall / Wild Card modes), a rival
+    // that currently leads its division is bound for a division seed, not a wild
+    // card — their result doesn't soften the wild-card race, so leave them out.
+    const wcGoal = mode === "overall" || mode === "wildcard";
     for (const team of [home, away]) {
       const t = teams[team];
       if (team === fav.abbr || t.conf !== fav.conf) continue;
-      if (t.record[0] > t.record[1] && !_elimFromWildcard(t, teams) && !_elimFromPlayoffs(fav, teams) && !_clinched(t, teams)) {
+      if (wcGoal && _isDivLeader(t, teams)) continue;
+      if (t.record[0] > t.record[1] && !_elimFromWildcard(t, teams, league) && !_elimFromPlayoffs(fav, teams, league) && !_clinched(t, teams, league)) {
         const opp = team === home ? away : home;
         const favWP = winPct(fav), teamWP = winPct(t);
-        const posnTarget = { division: "division title odds", conf_one_seed: "#1 seed odds" }[mode] || "wild card odds";
+        const posnTarget = { division: "division title odds", conf_one_seed: league.byes > 1 ? "top-seed odds" : "#1 seed odds" }[mode] || "wild card odds";
         let posnStr;
         if (teamWP > favWP + 0.01) {
           posnStr = `(${t.record[0]}-${t.record[1]}) holds a spot above you — their loss improves your ${posnTarget}`;
@@ -949,7 +1084,10 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
 
   // Draft positioning only makes sense when fav is already eliminated from playoffs.
   // Suggesting draft picks while fav still has playoff stakes is a distraction.
-  if ((mode === "overall" || mode === "wildcard") && _elimFromPlayoffs(fav, teams)) {
+  if ((mode === "overall" || mode === "wildcard") && _elimFromPlayoffs(fav, teams, league)) {
+    // "No man's land" win band, scaled to season length (NFL 6–9 of 17).
+    const nmlLo = Math.round(0.35 * league.gamesPerSeason);
+    const nmlHi = Math.round(0.53 * league.gamesPerSeason);
     for (const team of [home, away]) {
       if (team === fav.abbr) continue;
       const t = teams[team];
@@ -957,7 +1095,7 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
       const isConfThreat = t.conf === fav.conf;
       if (!(isDivRival || isConfThreat)) continue;
       const w = t.record[0];
-      if (w >= 6 && w <= 9) {
+      if (w >= nmlLo && w <= nmlHi) {
         const opp = team === home ? away : home;
         const label = isDivRival ? "division rival" : "conference threat";
         out.push({ root_for: opp, against: team, category: "DraftPositioning", strength: "low", strength_weight: STRENGTH_WEIGHT.low, why: `${team} (${t.record[0]}-${t.record[1]}) is a ${label} stuck in no man's land — keep them losing` });
@@ -992,7 +1130,7 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
   return out;
 }
 
-export function scoreGameTank(home, away, fav, teams, weekMeta) {
+export function scoreGameTank(home, away, fav, teams, weekMeta, league = DEFAULT_LEAGUE) {
   if (home === fav.abbr || away === fav.abbr) return null;
   const favWins = fav.record[0];
   const hW = teams[home].record[0], aW = teams[away].record[0];
@@ -1011,32 +1149,33 @@ export function scoreGameTank(home, away, fav, teams, weekMeta) {
   return { rootFor: rootAbbr, against: againstAbbr, score: base, strength, strength_weight: STRENGTH_WEIGHT[strength], category: "TankPositioning", reasonsAll: [why] };
 }
 
-export function buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, weekMeta) {
+export function buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, weekMeta, league = DEFAULT_LEAGUE) {
   const parts = [];
   const opp = teams[againstAbbr];
-  const targetByMode = { division: "division title odds", conf_one_seed: "#1 seed odds", wildcard: "wild card odds", overall: "wild card odds", tank: "draft slot" };
+  const topSeedTarget = league.byes > 1 ? "top-seed odds" : "#1 seed odds";
+  const targetByMode = { division: "division title odds", conf_one_seed: topSeedTarget, wildcard: "wild card odds", overall: "wild card odds", tank: "draft slot" };
   const target = targetByMode[mode];
   const isDivRival = opp.div === fav.div && opp.conf === fav.conf;
   // Division rival reasoning only when BOTH teams are alive in the division race.
   // If either is eliminated, they fall through to conference competitor logic below.
-  if (isDivRival && !_elimFromDivision(fav, teams) && !_elimFromDivision(opp, teams)) {
+  if (isDivRival && !_elimFromDivision(fav, teams, league) && !_elimFromDivision(opp, teams, league)) {
     const fGB = gamesBack(fav, teams), oGB = gamesBack(opp, teams), wr = weeksRemainingFrom(weekMeta);
     if (inDivisionContention(fav, teams, weekMeta) && inDivisionContention(opp, teams, weekMeta)) {
       let gbStr;
-      if (fGB === 0 && oGB > 0) gbStr = `${againstAbbr} is ${oGB.toFixed(1)} GB behind you`;
-      else if (oGB === 0 && fGB > 0) gbStr = `you are ${fGB.toFixed(1)} GB behind ${againstAbbr}`;
-      else if (fGB < oGB) gbStr = `${againstAbbr} is ${(oGB - fGB).toFixed(1)} GB behind you`;
-      else if (oGB < fGB) gbStr = `you are ${(fGB - oGB).toFixed(1)} GB behind ${againstAbbr}`;
+      if (fGB === 0 && oGB > 0) gbStr = `${againstAbbr} is ${oGB.toFixed(1)} games behind you`;
+      else if (oGB === 0 && fGB > 0) gbStr = `you are ${fGB.toFixed(1)} games behind ${againstAbbr}`;
+      else if (fGB < oGB) gbStr = `${againstAbbr} is ${(oGB - fGB).toFixed(1)} games behind you`;
+      else if (oGB < fGB) gbStr = `you are ${(fGB - oGB).toFixed(1)} games behind ${againstAbbr}`;
       else gbStr = "tied in the division";
-      parts.push(`${againstAbbr} is a division rival in a title race (${gbStr}, ${wr} week${wr !== 1 ? 's' : ''} left) — their loss directly helps your ${target}`);
+      parts.push(`${againstAbbr} is a division rival in a title race (${gbStr}, ${wr} ${league.periodNoun}${wr !== 1 ? 's' : ''} left) — their loss directly helps your ${target}`);
     } else {
       parts.push(`${againstAbbr} is a division rival — their loss improves ${target}`);
     }
   } else if (opp.conf === fav.conf) {
-    const oppElim = _elimFromPlayoffs(opp, teams);
-    const oppWCElim = _elimFromWildcard(opp, teams);
-    const favElim = _elimFromPlayoffs(fav, teams);
-    const oppClinched = _clinched(opp, teams);
+    const oppElim = _elimFromPlayoffs(opp, teams, league);
+    const oppWCElim = _elimFromWildcard(opp, teams, league);
+    const favElim = _elimFromPlayoffs(fav, teams, league);
+    const oppClinched = _clinched(opp, teams, league);
     if (mode === "conf_one_seed") {
       if (!oppElim) {
         const clinchNote = oppClinched ? `, clinched the ${opp.conf} ${opp.div},` : '';
@@ -1053,7 +1192,7 @@ export function buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, w
       const wcBlockers = Object.values(teams).filter(
         t => t.conf === fav.conf && t.div !== fav.div && t.abbr !== fav.abbr && t.record[0] > favMaxWins
       ).length;
-      if (wcBlockers < 3) {
+      if (wcBlockers < league.wildcards) {
         const favWP = winPct(fav), oppWP = winPct(opp);
         let standingStr;
         if (oppWP > favWP + 0.005) {
@@ -1072,7 +1211,7 @@ export function buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, w
 
 /* ─── Main computations ──────────────────────────────────────────────────── */
 
-export function computeRecommendations(favAbbr, dislikes, mode = "overall", teams, schedule, strengths, weekMeta) {
+export function computeRecommendations(favAbbr, dislikes, mode = "overall", teams, schedule, strengths, weekMeta, league = DEFAULT_LEAGUE) {
   const fav = teams?.[favAbbr];
   if (!fav) return [];
   dislikes = (dislikes || []).map(d => d.toUpperCase());
@@ -1086,16 +1225,20 @@ export function computeRecommendations(favAbbr, dislikes, mode = "overall", team
     if (g.completed) continue;
 
     if (mode === "tank") {
-      const r = scoreGameTank(g.home, g.away, fav, teams, weekMeta);
+      const r = scoreGameTank(g.home, g.away, fav, teams, weekMeta, league);
       if (r) recs.push({ gameId: g.id, ...r, kickoff: g.kickoff, network: g.network, slot: g.slot, spread: g.spread, underdog: resolveUnderdog(g), reasoning: r.reasonsAll[0] });
       continue;
     }
 
     let playoffRoot = null, playoffAgainst = null, playoffScore = 0;
+    // Per-side playoff scores, kept in scope so the score reflects whichever side
+    // we actually end up rooting for (not just the higher-scoring side).
+    let hMode = 0, aMode = 0;
     const homeT = teams[g.home], awayT = teams[g.away];
     if (homeT.conf === fav.conf || awayT.conf === fav.conf) {
-      const h = modeScore(g.home, g.away, fav, mode, dislikes, teams, weekMeta);
-      const a = modeScore(g.away, g.home, fav, mode, dislikes, teams, weekMeta);
+      const h = modeScore(g.home, g.away, fav, mode, dislikes, teams, weekMeta, league);
+      const a = modeScore(g.away, g.home, fav, mode, dislikes, teams, weekMeta, league);
+      hMode = h; aMode = a;
       const underdog = resolveUnderdog(g);
       const _ud = 0.02;
       const adjH = h + (g.home === underdog ? _ud : 0);
@@ -1106,7 +1249,7 @@ export function computeRecommendations(favAbbr, dislikes, mode = "overall", team
       playoffRoot = g.home; playoffAgainst = g.away; playoffScore = 0;
     }
 
-    const scenarios = scenarioRows(g.home, g.away, fav, dislikes, mode, futureFavOpponents, teams, weekMeta);
+    const scenarios = scenarioRows(g.home, g.away, fav, dislikes, mode, futureFavOpponents, teams, weekMeta, league);
     const homeWeight = scenarios.filter(s => s.root_for === g.home).reduce((a, b) => a + b.strength_weight, 0);
     const awayWeight = scenarios.filter(s => s.root_for === g.away).reduce((a, b) => a + b.strength_weight, 0);
 
@@ -1120,13 +1263,16 @@ export function computeRecommendations(favAbbr, dislikes, mode = "overall", team
       category = primary.category;
       strength = primary.strength;
       strengthWeight = primary.strength_weight;
-      score = rootAbbr === playoffRoot ? playoffScore : 0;
+      // Use the playoff score of the side we're actually rooting for. Previously
+      // this zeroed out whenever the scenario winner differed from the higher
+      // modeScore side, so a genuine division/wild-card game could read "0 impact".
+      score = rootAbbr === g.home ? hMode : aMode;
       reasonsAll = [primary.why];
       if (matching.length > 1 && matching[1].strength_weight >= 0.20 && matching[1].category !== primary.category) {
         reasonsAll.push(matching[1].why);
       }
       if (playoffScore > 0 && rootAbbr === playoffRoot && primary.strength_weight < 0.35) {
-        reasonsAll.push(...buildReasoning(rootAbbr, againstAbbr, fav, mode, playoffScore, teams, weekMeta));
+        reasonsAll.push(...buildReasoning(rootAbbr, againstAbbr, fav, mode, playoffScore, teams, weekMeta, league));
       }
     } else {
       rootAbbr = playoffRoot; againstAbbr = playoffAgainst;
@@ -1134,12 +1280,12 @@ export function computeRecommendations(favAbbr, dislikes, mode = "overall", team
       strengthWeight = 0;
       // Call buildReasoning first — if it can't produce a meaningful reason
       // (eliminated teams, out-of-conference games) the score should be 0.
-      reasonsAll = buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, weekMeta);
+      reasonsAll = buildReasoning(rootAbbr, againstAbbr, fav, mode, score, teams, weekMeta, league);
       const hasReason = !(reasonsAll.length === 1 && reasonsAll[0] === 'no direct playoff impact');
       if (score > 0 && hasReason) {
         // If the opponent has clinched their division the game is seeding-only, not WC
         const oppTeam = teams[againstAbbr];
-        const isSeedingOnly = oppTeam && oppTeam.conf === fav.conf && _clinched(oppTeam, teams);
+        const isSeedingOnly = oppTeam && oppTeam.conf === fav.conf && _clinched(oppTeam, teams, league);
         category = isSeedingOnly ? "PlayoffSeeding" : "direct_playoff_impact";
         strength  = isSeedingOnly ? "medium"          : "low";
       } else {
@@ -1188,18 +1334,18 @@ export function computeRecommendations(favAbbr, dislikes, mode = "overall", team
   return recs;
 }
 
-export function computeScenarios(favAbbr, teams, schedule, weekMeta) {
+export function computeScenarios(favAbbr, teams, schedule, weekMeta, league = DEFAULT_LEAGUE) {
   const fav = teams?.[favAbbr];
   if (!fav) return [];
 
-  const tiebreakerReasons = computeTiebreakerReasons(teams);
-  const standings = computeStandings(teams, tiebreakerReasons);
+  const tiebreakerReasons = computeTiebreakerReasons(teams, league);
+  const standings = computeStandings(teams, tiebreakerReasons, league);
   const seed = standings.byTeam[favAbbr] || {};
   const favWins = fav.record[0];
   const favLosses = fav.record[1];
 
   const gamesPlayed = (t) => t.record[0] + t.record[1] + (t.record[2] || 0);
-  const teamRem = (t) => Math.max(0, 17 - gamesPlayed(t));
+  const teamRem = (t) => Math.max(0, league.gamesPerSeason - gamesPlayed(t));
   const favRem = teamRem(fav);
   const maxFavWins = favWins + favRem;
 
@@ -1291,8 +1437,8 @@ export function computeScenarios(favAbbr, teams, schedule, weekMeta) {
     const isDivLeader = divRivals.length > 0 && divRivals.every(r => r.record[0] < favWins);
     if (!isDivLeader) {
       const teamsCanExceedCurrent = confTeams.filter(t => t.abbr !== favAbbr && t.record[0] + teamRem(t) > favWins).length;
-      const wcClinched = teamsCanExceedCurrent < 7;
-      const wcEliminated = confTeams.filter(t => t.abbr !== favAbbr && t.record[0] > maxFavWins).length >= 7;
+      const wcClinched = teamsCanExceedCurrent < league.playoffSeeds;
+      const wcEliminated = confTeams.filter(t => t.abbr !== favAbbr && t.record[0] > maxFavWins).length >= league.playoffSeeds;
 
       if (wcClinched) {
         scenarios.push({ id: "wc-clinched", kind: "clinched", title: `${fav.conf} playoff berth — Clinched`, summary: `${favAbbr} has mathematically secured a playoff spot.`, requires: [], likelihood: 1.0, urgency: "low", isClinched: true });
@@ -1300,7 +1446,7 @@ export function computeScenarios(favAbbr, teams, schedule, weekMeta) {
         scenarios.push({ id: "wc-eliminated", kind: "eliminated", title: `Eliminated from ${fav.conf} playoff contention`, summary: `${favAbbr} is mathematically eliminated from the playoffs.`, requires: [], likelihood: 0, urgency: "low", isClinched: true });
       } else {
         const teamsCanExceedMax = confTeams.filter(t => t.abbr !== favAbbr && t.record[0] + teamRem(t) > maxFavWins).length;
-        if (teamsCanExceedMax < 7 && favRem > 0) {
+        if (teamsCanExceedMax < league.playoffSeeds && favRem > 0) {
           scenarios.push({ id: "wc-clinch-1", kind: "clinch", title: `Lock down a ${fav.conf} wildcard — Control your destiny`, summary: `${favAbbr} wins all ${favRem} remaining games and clinches without needing any help.`, requires: [makeWinReq(favRem)], likelihood: Math.max(0.10, 0.65 - favRem * 0.06), urgency: favRem <= 2 ? "high" : "med" });
         }
         const dangerTeams = confTeams.filter(t => t.abbr !== favAbbr && t.record[0] < favWins && t.record[0] + teamRem(t) >= favWins).slice(0, 3);
@@ -1330,8 +1476,8 @@ export function computeScenarios(favAbbr, teams, schedule, weekMeta) {
 
   // Elimination watch
   {
-    const definitivelyOut = confTeams.filter(t => t.abbr !== favAbbr && t.record[0] > maxFavWins).length >= 7;
-    if (!definitivelyOut && favLosses >= 6) {
+    const definitivelyOut = confTeams.filter(t => t.abbr !== favAbbr && t.record[0] > maxFavWins).length >= league.playoffSeeds;
+    if (!definitivelyOut && favLosses >= Math.round(0.35 * league.gamesPerSeason)) {
       const threats = confTeams.filter(t => t.abbr !== favAbbr && t.record[0] < favWins && t.record[0] + teamRem(t) >= favWins).slice(0, 3);
       const definitivelyAhead = confTeams.filter(t => t.abbr !== favAbbr && t.record[0] >= favWins).length;
       if (threats.length >= 2 && definitivelyAhead >= 4) {
@@ -1357,9 +1503,12 @@ export function computeScenarios(favAbbr, teams, schedule, weekMeta) {
     }
   }
 
-  // #1 seed / bye chase
-  if ([1, 2, 3].includes(seed.seed)) {
+  // Top seed / bye chase — for teams near the top of the bracket.
+  if (seed.seed != null && seed.seed <= league.byes + 2) {
     const confLeader = confTeams[0];
+    const byeTitle = league.byes > 1
+      ? `Climb to a top-${league.byes} seed (first-round bye)`
+      : `Climb to the #1 seed (bye week + home field)`;
     if (confLeader.abbr !== favAbbr) {
       const lRem = teamRem(confLeader);
       const mn = magicSplit(favWins, favRem, confLeader.record[0], lRem);
@@ -1367,7 +1516,7 @@ export function computeScenarios(favAbbr, teams, schedule, weekMeta) {
         const requires = [];
         if (mn.winsNeeded > 0) requires.push({ type: "win", team: favAbbr, rationale: `Win ${mn.winsNeeded} of ${favRem} remaining games`, week: "Any week" });
         if (mn.rivalLosses > 0) requires.push({ type: "loss", team: confLeader.abbr, rationale: `${mn.rivalLosses} more loss${mn.rivalLosses !== 1 ? "es" : ""} (${lRem} remaining)`, week: "Any week" });
-        scenarios.push({ id: "bye-chase", kind: "clinch", title: `Climb to the #1 seed (bye week + home field)`, summary: `${favAbbr} needs ${mn.winsNeeded} more win${mn.winsNeeded !== 1 ? 's' : ''} and ${confLeader.abbr} to stumble.`, requires, likelihood: 0.22, urgency: "med" });
+        scenarios.push({ id: "bye-chase", kind: "clinch", title: byeTitle, summary: `${favAbbr} needs ${mn.winsNeeded} more win${mn.winsNeeded !== 1 ? 's' : ''} and ${confLeader.abbr} to stumble.`, requires, likelihood: 0.22, urgency: "med" });
       }
     }
   }

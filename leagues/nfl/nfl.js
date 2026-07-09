@@ -66,3 +66,61 @@ export const STRENGTH_META = {
   medium: { label: "Medium", weight: 0.20, color: "oklch(0.66 0.10 50)" },
   low:    { label: "Low",    weight: 0.10, color: "var(--text-faint)" },
 };
+
+/* ─── League config ──────────────────────────────────────────────────────── *
+ * Every constant the generic engine (root4.js) used to hard-code lives here so
+ * a second league (leagues/mlb/mlb.js) can supply its own values. The engine
+ * threads this object through its pure functions as the `league` parameter. */
+export const LEAGUE = {
+  id: "nfl",
+  name: "NFL",
+  sportPath: "football",          // URL segment: who2root4/football
+  espnSport: "football/nfl",      // ESPN API path segment
+  gamesPerSeason: 17,             // regular-season games per team
+  conferences: ["AFC", "NFC"],    // the engine's two "conferences"
+  divisionOrder: ["North", "South", "East", "West"], // display order within a conference
+  wildcards: 3,                   // wild-card berths per conference
+  byes: 1,                        // top seeds that receive a first-round bye
+  playoffSeeds: 7,                // berths per conference (division winners + wildcards)
+  tiesAllowed: true,
+  periodNoun: "week",             // "this week" / "N weeks left"
+  periodLabelThisWeek: "This Week",
+  seedTerm: "seed",
+  // Plain-language tiebreaker procedures, rendered on the Standings page.
+  tiebreakerProcedures: {
+    div: {
+      tag: "DIV", title: "Divisional tie-breaker procedure",
+      steps: [
+        "Head-to-head (best won-lost-tied % in games between the clubs)",
+        "Best won-lost-tied % in games played within the division",
+        "Best won-lost-tied % in common games",
+        "Best won-lost-tied % in games played within the conference",
+        "Strength of victory",
+        "Strength of schedule",
+        "Best combined ranking in conference points scored & allowed",
+        "Best combined ranking in NFL points scored & allowed",
+        "Best net points in common games",
+        "Best net points in all games",
+        "Best net touchdowns in all games",
+        "Coin toss",
+      ],
+    },
+    wc: {
+      tag: "WC", title: "Wild-card tie-breaker procedure",
+      steps: [
+        "Apply divisional tie-breaker to eliminate all but the highest-ranked club in each division first",
+        "Head-to-head sweep (only if one club has beaten or lost to each of the others)",
+        "Best won-lost-tied % in games played within the conference",
+        "Best won-lost-tied % in common games (minimum of four)",
+        "Strength of victory",
+        "Strength of schedule",
+        "Best combined ranking in conference points scored & allowed",
+        "Best combined ranking in NFL points scored & allowed",
+        "Best net points in conference games",
+        "Best net points in all games",
+        "Best net touchdowns in all games",
+        "Coin toss",
+      ],
+    },
+  },
+};
