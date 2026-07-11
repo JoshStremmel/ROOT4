@@ -86,6 +86,7 @@ export const LEAGUE = {
   periodNoun: "week",             // "this week" / "N weeks left"
   periodLabelThisWeek: "This Week",
   seedTerm: "seed",
+  seasonSpansYears: true,         // regular season runs Sept–Feb: display as "2025-26", not a bare year
   // Plain-language tiebreaker procedures, rendered on the Standings page.
   tiebreakerProcedures: {
     div: {

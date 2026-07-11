@@ -1113,17 +1113,49 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
   // SOV: if fav beat one of these teams earlier, root for them to keep winning
   // (higher opp win pct = fav's win over them looks more impressive).
   // Only applies to non-division rivals (those are already handled above).
-  for (const team of [home, away]) {
-    if (team === fav.abbr) continue;
-    const t = teams[team];
-    if (t.div === fav.div && t.conf === fav.conf) continue;
-    const favBeatThem = (fav.results || []).some(r => r.win && r.oppAbbr === team);
-    if (favBeatThem) {
-      out.push({
-        root_for: team, against: team === home ? away : home,
-        category: "SOVRooting", strength: "low", strength_weight: STRENGTH_WEIGHT.low,
-        why: `You beat ${team} earlier this season — root for them to keep winning and make that win look better`,
-      });
+  //
+  // Baseball plays the same opponent many times a season (division/league
+  // foes see 10+ meetings), so a single earlier result doesn't tell the whole
+  // story the way it does in the NFL's 1-2 meeting schedule — track the full
+  // season series instead, and mirror the logic when fav is trailing it too.
+  if (league.id === "mlb") {
+    for (const team of [home, away]) {
+      if (team === fav.abbr) continue;
+      const t = teams[team];
+      if (t.div === fav.div && t.conf === fav.conf) continue;
+      const series = (fav.results || []).filter(r => r.oppAbbr === team);
+      if (!series.length) continue;
+      const seriesW = series.filter(r => r.win).length;
+      const seriesL = series.length - seriesW;
+      if (seriesW === seriesL) continue;
+      const opp = team === home ? away : home;
+      if (seriesW > seriesL) {
+        out.push({
+          root_for: team, against: opp,
+          category: "SeriesRooting", strength: "low", strength_weight: STRENGTH_WEIGHT.low,
+          why: `You're up ${seriesW}-${seriesL} on ${team} in the season series — root for them to keep winning and make that series lead look better`,
+        });
+      } else {
+        out.push({
+          root_for: opp, against: team,
+          category: "SeriesRooting", strength: "low", strength_weight: STRENGTH_WEIGHT.low,
+          why: `You're down ${seriesL}-${seriesW} to ${team} in the season series — root against them to take some shine off that series edge`,
+        });
+      }
+    }
+  } else {
+    for (const team of [home, away]) {
+      if (team === fav.abbr) continue;
+      const t = teams[team];
+      if (t.div === fav.div && t.conf === fav.conf) continue;
+      const favBeatThem = (fav.results || []).some(r => r.win && r.oppAbbr === team);
+      if (favBeatThem) {
+        out.push({
+          root_for: team, against: team === home ? away : home,
+          category: "SOVRooting", strength: "low", strength_weight: STRENGTH_WEIGHT.low,
+          why: `You beat ${team} earlier this season — root for them to keep winning and make that win look better`,
+        });
+      }
     }
   }
 
@@ -1573,25 +1605,31 @@ export function playoffImplicationReasons(home, away, teams, weekMeta) {
   const sameConf = home.conf === away.conf;
 
   if (sameDiv) {
-    reasons.push(`Division showdown — a direct swing in the ${home.conf} ${home.div} race.`);
+    reasons.push(`${home.conf} ${home.div} division matchup.`);
     if (H.leader && A.leader) {
       reasons.push(`Winner takes sole possession of first place in the ${home.div}.`);
     } else if (H.leader || A.leader) {
       const leader = H.leader ? home : away;
       const chaser = H.leader ? away : home;
-      reasons.push(`${chaser.name} can pull even with the first-place ${leader.name}.`);
+      const chaserCtx = H.leader ? A : H;
+      // "Pull even" only reads true when one win actually closes the gap —
+      // for a double-digit deficit it's misleading, so switch to "cuts into"
+      // language once the chaser is more than a game back.
+      reasons.push(chaserCtx.gb <= 1
+        ? `${chaser.name} can pull even with the first-place ${leader.name}.`
+        : `${chaser.name} (${fmtGb(chaserCtx.gb)} back) can cut into ${leader.name}'s division lead.`);
     } else {
       reasons.push(`Both teams are chasing the ${home.conf} ${home.div} lead.`);
     }
   } else if (sameConf) {
-    reasons.push(`${home.conf} clash with wild-card seeding on the line.`);
+    reasons.push(`${home.conf} conference matchup.`);
   } else {
     reasons.push(`Cross-conference result shapes playoff tiebreakers and strength of schedule.`);
   }
 
   const note = (t, c) => {
     if (c.leader) return `${t.name} lead the ${t.div} and can build separation.`;
-    if (c.alive) return `${t.name} sit ${fmtGb(c.gb)} back in the ${t.div} — every game counts.`;
+    if (c.alive) return `${t.name} sit ${fmtGb(c.gb)} back in the ${t.div}.`;
     return null;
   };
   const nh = note(home, H); if (nh) reasons.push(nh);

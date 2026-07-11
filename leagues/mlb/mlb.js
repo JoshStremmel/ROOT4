@@ -57,7 +57,7 @@ export const CATEGORY_META = {
   DraftPositioning:      { label: "Draft positioning",   tone: "neutral", help: "Stuck in no-man's-land; keep them losing." },
   Dislikes:              { label: "Personal rivalry",    tone: "warn",    help: "Boosted because you marked them as disliked." },
   TankPositioning:       { label: "Tank positioning",    tone: "fav",     help: "Protect your draft-lottery odds — bring teams below you up." },
-  SOVRooting:            { label: "Strength of victory", tone: "muted",   help: "You beat this team — root for them to keep winning and make that win look better." },
+  SeriesRooting:         { label: "Season series",       tone: "muted",   help: "Tracks your regular-season series vs this team — rooted to make a series lead look better, or a series deficit sting less." },
   UnderdogPick:          { label: "Underdog pick",       tone: "muted",   help: "No direct playoff impact — rooting for the upset." },
   PlayoffSeeding:        { label: "Playoff seeding",     tone: "neutral", help: "Both teams are in the playoffs; this game only affects seed position." },
   direct_playoff_impact: { label: "Playoff impact",      tone: "fav",     help: "Direct playoff math: their loss improves your odds." },
