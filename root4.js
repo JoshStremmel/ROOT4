@@ -1055,7 +1055,13 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
       const t = teams[team];
       if (team === fav.abbr || t.conf !== fav.conf) continue;
       if (wcGoal && _isDivLeader(t, teams)) continue;
-      if (t.record[0] > t.record[1] && !_elimFromWildcard(t, teams, league) && !_elimFromPlayoffs(fav, teams, league) && !_clinched(t, teams, league)) {
+      // A winning record is a fair "still a factor" proxy in a short NFL season, but
+      // MLB's 162-game schedule keeps sub-.500 clubs alive for months — a team a few
+      // games back in the wild card is a live threat to root against until it's
+      // mathematically eliminated. So in MLB wild-card/overall modes, gate on actual
+      // elimination (checked below) rather than requiring a winning record.
+      const stillAFactor = (league.id === "mlb" && wcGoal) ? true : t.record[0] > t.record[1];
+      if (stillAFactor && !_elimFromWildcard(t, teams, league) && !_elimFromPlayoffs(fav, teams, league) && !_clinched(t, teams, league)) {
         const opp = team === home ? away : home;
         const favWP = winPct(fav), teamWP = winPct(t);
         const posnTarget = { division: "division title odds", conf_one_seed: league.byes > 1 ? "top-seed odds" : "#1 seed odds" }[mode] || "wild card odds";
@@ -1123,6 +1129,19 @@ export function scenarioRows(home, away, fav, dislikes, mode, futureFavOpponents
       if (team === fav.abbr) continue;
       const t = teams[team];
       if (t.div === fav.div && t.conf === fav.conf) continue;
+      // The season series is cosmetic — it must never outweigh, or stand in for, the
+      // real playoff math. It only applies when this game can't move the fav's
+      // picture at all: the opponent is in the other league, or either side is out of
+      // contention, or the opponent has already clinched a seed (so they're no longer
+      // a wild-card factor for you). While a same-league team is still alive and
+      // uncinched, the division/wild-card logic above governs and the series is
+      // irrelevant — skip it so a series lead/deficit can't hijack the recommendation.
+      const playoffRelevant =
+        t.conf === fav.conf &&
+        !_elimFromPlayoffs(fav, teams, league) &&
+        !_elimFromPlayoffs(t, teams, league) &&
+        !_clinched(t, teams, league);
+      if (playoffRelevant) continue;
       const series = (fav.results || []).filter(r => r.oppAbbr === team);
       if (!series.length) continue;
       const seriesW = series.filter(r => r.win).length;
