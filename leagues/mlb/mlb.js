@@ -88,9 +88,9 @@ export const LEAGUE = {
   periodNoun: "game",             // remaining-count unit: "N games left"
   periodLabelThisWeek: "Today",   // tab / header label (NFL says "This Week")
   seedTerm: "seed",
-  seasonSpansYears: true,         // display the current period as "2026-27 Season"
-                                  // for cross-sport consistency with the NFL label
-                                  // (the site frames "now" as the 2026-27 season)
+  seasonSpansYears: false,        // MLB's regular season runs entirely within one
+                                  // calendar year (Apr–Oct) — display "2026 Season",
+                                  // not a spanning "2026-27" like the NFL
   // MLB scrapped the Game 163 in 2022 — ties are now broken mathematically.
   // The same ordered criteria apply to division-title and wild-card ties.
   tiebreakerProcedures: {
