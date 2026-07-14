@@ -82,14 +82,15 @@ export function resolveUnderdog(g) {
 
 /* ─── Team strength ──────────────────────────────────────────────────────── */
 
-export function buildTeamStrengths(teams) {
+export function buildTeamStrengths(teams, league = DEFAULT_LEAGUE) {
   const out = {};
   const raw = {};
+  const recentGames = league.recentFormGames ?? 4;
   for (const abbr of Object.keys(teams)) {
     const t = teams[abbr];
     const wp = winPct(t);
     const pd = t.pf - t.pa;
-    const recent = t.results.slice(-4);
+    const recent = t.results.slice(-recentGames);
     const recentWp = recent.length ? recent.filter(r => r.win).length / recent.length : 0;
     const margins = t.results.filter(r => r.win).map(r => r.pf - r.pa);
     let consistency = 0.5;
@@ -125,7 +126,7 @@ export function buildTeamStrengths(teams) {
     const pointDiff = (r.pd - minPd) / range;
     const wpNorm = (r.wp - minWp) / wpRange;   // 0 = league-worst record, 1 = league-best
     const strengthScore = Math.max(0, Math.min(1,
-      0.45 * wpNorm + 0.25 * pointDiff + 0.15 * r.recentWp + 0.05 * r.consistency + 0.05 * r.divBonus + 0.05 * r.sos
+      0.40 * wpNorm + 0.20 * pointDiff + 0.15 * r.recentWp + 0.05 * r.consistency + 0.05 * r.divBonus + 0.15 * r.sos
     ));
     out[abbr] = {
       strengthScore: +strengthScore.toFixed(2),

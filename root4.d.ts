@@ -87,6 +87,7 @@ export interface LeagueConfig {
   sportPath: string;
   espnSport: string;
   gamesPerSeason: number;
+  recentFormGames: number;
   conferences: string[];
   divisionOrder: string[];
   wildcards: number;
@@ -156,7 +157,7 @@ export declare function inDivisionContention(team: TeamData, teams: Record<strin
 export declare function maxWins(team: TeamData, weekMeta: WeekMeta): number;
 export declare function resolveUnderdog(g: ScheduleGame): string | null;
 
-export declare function buildTeamStrengths(teams: Record<string, TeamData>): Record<string, TeamStrength>;
+export declare function buildTeamStrengths(teams: Record<string, TeamData>, league?: LeagueConfig): Record<string, TeamStrength>;
 export declare function computeTiebreakerReasons(rawTeams: Record<string, TeamData>, league?: LeagueConfig): Record<string, TiebreakerEntry>;
 
 export interface MultiTieEntry {

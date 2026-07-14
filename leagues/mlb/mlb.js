@@ -79,6 +79,7 @@ export const LEAGUE = {
   sportPath: "baseball",          // URL segment: who2root4/baseball
   espnSport: "baseball/mlb",      // ESPN API path segment
   gamesPerSeason: 162,
+  recentFormGames: 10,            // trailing games sampled for strength's "recent form" signal
   conferences: ["AL", "NL"],
   divisionOrder: ["East", "Central", "West"],
   wildcards: 3,                   // wild-card berths per league

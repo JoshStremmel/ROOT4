@@ -77,6 +77,7 @@ export const LEAGUE = {
   sportPath: "football",          // URL segment: who2root4/football
   espnSport: "football/nfl",      // ESPN API path segment
   gamesPerSeason: 17,             // regular-season games per team
+  recentFormGames: 4,             // trailing games sampled for strength's "recent form" signal
   conferences: ["AFC", "NFC"],    // the engine's two "conferences"
   divisionOrder: ["North", "South", "East", "West"], // display order within a conference
   wildcards: 3,                   // wild-card berths per conference
