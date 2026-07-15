@@ -111,6 +111,11 @@ export const LEAGUE = {
   wildcards: 8,                    // playoff berths beyond the conference leader (seeds 2–9)
   byes: 1,                         // the #1 seed hosts every round → treat as the "#1 seed" reward
   playoffSeeds: 9,                 // MLS Cup Playoff berths per conference (top 9)
+  // Only the bottom N of those berths are true "Wild Card" seeds (in MLS, seeds
+  // 8 & 9 play a single Wild Card match); seeds 1–7 advance to Round One
+  // directly. The Standings view uses this purely for display: the last N seeds
+  // keep the purple wild-card treatment, the rest are painted like the #1 seed.
+  wildcardGameSeeds: 2,            // seeds 8 & 9 → Wild Card round
   tiesAllowed: true,              // regular-season matches can end in a draw
   periodNoun: "match",             // remaining-count unit: "N matches left"
   periodNounPlural: "matches",     // irregular plural (avoids "matchs")
